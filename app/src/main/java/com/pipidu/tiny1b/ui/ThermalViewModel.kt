@@ -35,6 +35,7 @@ class ThermalViewModel(
     fun setMirror(value: Boolean) = engine.setMirror(value)
     fun setFahrenheit(value: Boolean) = engine.setFahrenheit(value)
     fun setSamplePreview(value: Boolean) = engine.setSamplePreview(value)
+    fun setDenoise(value: Boolean) = engine.setDenoise(value)
     fun setMeasureEdit(value: Boolean) = engine.setMeasureEdit(value)
     fun addOrSelectPoint(nx: Float, ny: Float) = engine.addOrSelectPoint(nx, ny)
     fun moveUser(id: Long, nx: Float, ny: Float) = engine.moveUser(id, nx, ny)

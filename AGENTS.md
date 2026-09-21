@@ -12,7 +12,7 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-Shipped on `main`: Compose app, USB session, ISR, palettes, min/max + center + user points. No vendor demo tree in git.
+Shipped on `main`: Compose app, USB session, ISR, **display denoise (default off)**, palettes, min/max + center + user points. No vendor demo tree in git.
 
 ## Current architecture
 
@@ -23,7 +23,7 @@ app/      Android: USB host, UVC session, Compose UI (Chinese)
 
 - `ThermalEngine` opens Tiny1-B, pulls YUYV frames, runs ISR, publishes `EngineState`.
 - `LiveViewScreen` is connect-or-live: empty/permission/error cards, thermal stage, palettes, measurement dock.
-- `SettingsScreen` covers ISR, min/max, center point, shutter interval, KB cal, sample preview.
+- `SettingsScreen` covers ISR, **降噪 (default off)**, min/max, center point, shutter interval, KB cal, sample preview.
 
 ## Tiny1-B integration
 
@@ -36,6 +36,10 @@ app/      Android: USB host, UVC session, Compose UI (Chinese)
 ## ISR
 
 `SuperResolution`: percentile-AGC on temperature, Catmull-Rom 2× (optional second pass for 4×), unsharp Y-detail fused into the temperature field, then palette LUT. **Measurement always samples the native 192×256 temperature grid**, not the upscaled pixels.
+
+## Denoise
+
+Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5×5 median on the display luminance and a 3×3 median on the AGC-normalized temperature used for false color. This is display-only: `kelvin16` / `MeasurementModel` still read the unfiltered native grid.
 
 ## Measurement
 
@@ -50,7 +54,7 @@ AGENTS.md
 README.md
 .gitignore
 settings.gradle.kts / build.gradle.kts / gradle/
-core/src/main/kotlin/com/pipidu/tiny1b/core/
+core/src/main/kotlin/com/pipidu/tiny1b/core/   FrameParser, palettes, ISR, Denoise, measurement
 app/src/main/java/com/pipidu/tiny1b/          product
 app/src/main/java/com/zz/infisense/camera/    JNI names required by .so
 app/src/main/jniLibs/arm64-v8a/               Tiny1-B UVC JNI

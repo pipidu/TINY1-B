@@ -51,6 +51,7 @@ data class EngineState(
     val mirror: Boolean = false,
     val useFahrenheit: Boolean = false,
     val samplePreview: Boolean = false,
+    val denoise: Boolean = false,
     val shutterMaxSeconds: Int = 30,
     val colorBarMin: Float = 0f,
     val colorBarMax: Float = 40f,
@@ -199,6 +200,11 @@ class ThermalEngine(
         _state.update { it.copy(samplePreview = value) }
         if (value && _state.value.status != DeviceStatus.Live) startSample()
         if (!value) stopSample()
+    }
+
+    fun setDenoise(value: Boolean) {
+        settings.denoise = value
+        _state.update { it.copy(denoise = value) }
     }
 
     fun setMeasureEdit(value: Boolean) {
@@ -367,7 +373,12 @@ class ThermalEngine(
         }
         lastPlanes = planes
         val palette = Palettes.get(settings.paletteId)
-        val rendered: RenderedFrame = SuperResolution.enhance(planes, settings.isrScale, palette)
+        val rendered: RenderedFrame = SuperResolution.enhance(
+            planes,
+            settings.isrScale,
+            palette,
+            denoise = settings.denoise,
+        )
         val snap = measurement.snapshot(planes)
         val bmp = Bitmap.createBitmap(rendered.width, rendered.height, Bitmap.Config.ARGB_8888)
         bmp.setPixels(rendered.argb, 0, rendered.width, 0, 0, rendered.width, rendered.height)
@@ -403,6 +414,7 @@ class ThermalEngine(
         mirror = settings.mirror,
         useFahrenheit = settings.useFahrenheit,
         samplePreview = settings.samplePreview,
+        denoise = settings.denoise,
         shutterMaxSeconds = settings.shutterMaxSeconds,
     )
 }

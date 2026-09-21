@@ -19,10 +19,20 @@ data class RenderedFrame(
  * detail (high-pass) so edges stay sharper than a plain stretch.
  */
 object SuperResolution {
-    fun enhance(planes: ThermalPlanes, scale: IsrScale, palette: Palette): RenderedFrame {
-        val tempNorm = TemperatureMaps.normalize(planes.kelvin16)
-        val yNorm = FloatArray(planes.luminance.size) { i ->
+    fun enhance(
+        planes: ThermalPlanes,
+        scale: IsrScale,
+        palette: Palette,
+        denoise: Boolean = false,
+    ): RenderedFrame {
+        var tempNorm = TemperatureMaps.normalize(planes.kelvin16)
+        var yNorm = FloatArray(planes.luminance.size) { i ->
             (planes.luminance[i] / 255f).coerceIn(0f, 1f)
+        }
+        if (denoise) {
+            val cleaned = Denoise.apply(yNorm, tempNorm, planes.width, planes.height)
+            yNorm = cleaned.first
+            tempNorm = cleaned.second
         }
         var fusedW = planes.width
         var fusedH = planes.height

@@ -29,6 +29,7 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
                 onMirror = viewModel::setMirror,
                 onFahrenheit = viewModel::setFahrenheit,
                 onSample = viewModel::setSamplePreview,
+                onDenoise = viewModel::setDenoise,
                 onShutterMax = viewModel::applyShutterMax,
                 onKbCal = viewModel::setKbCalibrate,
             )

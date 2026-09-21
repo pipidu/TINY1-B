@@ -39,6 +39,10 @@ class AppSettings(context: Context) {
         get() = prefs.getInt(KEY_SHUTTER, 30)
         set(value) { prefs.edit().putInt(KEY_SHUTTER, value.coerceIn(1, 120)).apply() }
 
+    var denoise: Boolean
+        get() = prefs.getBoolean(KEY_DENOISE, false)
+        set(value) { prefs.edit().putBoolean(KEY_DENOISE, value).apply() }
+
     companion object {
         private const val KEY_PALETTE = "palette"
         private const val KEY_ISR = "isr"
@@ -48,5 +52,6 @@ class AppSettings(context: Context) {
         private const val KEY_F = "fahrenheit"
         private const val KEY_SAMPLE = "sample"
         private const val KEY_SHUTTER = "shutter_max"
+        private const val KEY_DENOISE = "denoise"
     }
 }

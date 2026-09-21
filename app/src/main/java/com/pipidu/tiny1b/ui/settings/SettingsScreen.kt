@@ -49,6 +49,7 @@ fun SettingsScreen(
     onMirror: (Boolean) -> Unit,
     onFahrenheit: (Boolean) -> Unit,
     onSample: (Boolean) -> Unit,
+    onDenoise: (Boolean) -> Unit,
     onShutterMax: (Int) -> Unit,
     onKbCal: (Boolean) -> Unit,
 ) {
@@ -92,6 +93,12 @@ fun SettingsScreen(
                     }
                 }
                 ToggleRow("水平镜像", "左右翻转实时画面", state.mirror, onMirror)
+                ToggleRow(
+                    "降噪",
+                    "默认关闭。用中值滤波去掉画面散斑；测温仍读取未滤波的原生温度网格。",
+                    state.denoise,
+                    onDenoise,
+                )
             }
             Section("测温") {
                 ToggleRow("中心测温点", "始终显示画面中心温度", state.showCenter, onShowCenter)
