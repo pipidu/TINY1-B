@@ -2,8 +2,8 @@ package com.pipidu.tiny1b.core
 
 /**
  * Pick which Tiny1-B in UsbManager.deviceList corresponds to an attach-intent extra
- * (by deviceName, then deviceId). Used as a fallback identity match — the object
- * to open after an attach grant is the Intent EXTRA_DEVICE itself.
+ * (by deviceName, then deviceId). Attach is not a USB grant — openDevice only after
+ * hasPermission is true on that instance.
  */
 object UsbLiveDevice {
     /**

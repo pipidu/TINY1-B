@@ -11,7 +11,7 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-On `main`: Compose app, light UI, **targetSdk 35**, USB grant via Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`), **Kotlin/Java UVC**, ISR, denoise (default off), palettes, measurement, in-app GitHub update. No vendor demo tree and no vendor `.so` in git. **1.0.8** opens the attach-intent `EXTRA_DEVICE` first (the granted object). The `deviceList` copy can still have `hasPermission=false` after a system grant.
+On `main`: Compose app, light UI, **targetSdk 35**, USB via Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) **plus** `UsbManager.requestPermission` (attach is not a grant on ColorOS), **Kotlin/Java UVC**, ISR, denoise (default off), palettes, measurement, in-app GitHub update. No vendor demo tree and no vendor `.so` in git. **1.0.9** never calls `openDevice` unless `hasPermission==true`.
 
 ## Current architecture
 
@@ -27,7 +27,7 @@ keystore/ Project signing key (required so later APKs overwrite the same install
 - `SettingsScreen` covers ISR, 降噪, min/max, center, shutter, KB cal, sample preview, **检查更新**.
 - `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated).
 
-USB grant matches the Infiray demo model: plugging Tiny1-B into a phone with this app installed shows Android’s system USB access / “open with” dialog (`USB_DEVICE_ATTACHED` on `MainActivity` + `@xml/device_filter`). That intent **already carries permission** — `openDevice` without `requestPermission`. The in-app **授权 USB** button was a dead loop on 1.0.5 and is gone.
+USB: plugging Tiny1-B can launch the app via `USB_DEVICE_ATTACHED` + `device_filter`. On ColorOS / targetSdk 35 that intent **does not** set `UsbManager.hasPermission`. Never call `openDevice` until hasPermission is true. Show **正在请求 USB 权限** and walk `requestPermission` PendingIntent variants. The in-app **授权 USB** button was a dead loop on 1.0.5 and stays gone — request is automatic while resumed.
 
 ## UI theme
 
@@ -47,8 +47,8 @@ Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on t
 ## Tiny1-B integration (no vendor .so)
 
 1. USB host matches **VID `0x0BDA` / PID `0x3901`**.
-2. After a system attach grant, `UsbHostController.open` calls `UsbManager.openDevice` on the Intent **`EXTRA_DEVICE` first** — that is the granted object. Do **not** require `hasPermission` on the `deviceList` copy (1.0.7 hardware: list `hasPermission=false`, `openDevice(list)` null). If extra open fails, try the matching `deviceList` instance, then one `requestPermission` on that list instance. Claim/UVC use whichever `UsbDevice` actually opened.
-3. Do **not** fail solely because `fileDescriptor() <= 0`; bulk streaming uses the connection object. `setConfiguration` is attempted after open.
+2. **Never** call `UsbManager.openDevice` unless `usbManager.hasPermission(device)` is true. `USB_DEVICE_ATTACHED` is not a grant (1.0.8 ColorOS: extra and deviceList both `hasPermission=false`, `openDevice` null). After hasPermission, open the instance that reports true (Intent extra and/or `deviceList`).
+3. Do **not** fail solely because `fileDescriptor() <= 0`; bulk streaming uses the connection object. `setConfiguration` is attempted after open. Do **not** blame other camera apps when hasPermission is false.
 4. `UvcCapture` detaches a kernel UVC driver (`USBDEVFS_IOCTL` `DISCONNECT`) then `claimInterface(iface, true)` on unique Video Control (class 14 / subclass 1) and Video Streaming (class 14 / subclass 2) interface **ids**. Android enumerates each altsetting as a separate `UsbInterface` — claim alt 0, then `setInterface` to the streaming alt.
 5. `getRawDescriptors()` is parsed in `core` (`UvcDescriptors`) for uncompressed **YUY2 256×384**. Fallback walks `UsbDevice` interfaces if the blob is incomplete.
 6. UVC `VS_PROBE` / `VS_COMMIT` via class interface control transfers (`bmRequestType` `0x21` / `0xA1`, `SET_CUR` `0x01`, `GET_CUR` `0x81`). Try GET_LEN size then 26/34/48. Failures show the `controlTransfer` return value.
@@ -60,15 +60,18 @@ Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on t
 
 ## USB permission (targetSdk 35)
 
-Grant path is **plug-in**, not an in-app button. Same idea as the vendor demo (the demo has no “授权 USB” card; the system attach dialog is the grant).
+`USB_DEVICE_ATTACHED` + `device_filter` still launches the app on plug-in. It is **not** a `UsbManager` grant on ColorOS / Android 14–15. The vendor demo connects because it uses `requestPermission` (and targetSdk 26).
 
 1. `MainActivity` is `singleTask` + `exported` and has `android.hardware.usb.action.USB_DEVICE_ATTACHED` with meta-data `@xml/device_filter` (`vendor-id` 3034 = `0x0BDA`, `product-id` 14593 = `0x3901`).
-2. `onCreate` / `onNewIntent`: if the action is `USB_DEVICE_ATTACHED`, take `UsbManager.EXTRA_DEVICE` and **open that object first**. Do **not** call `requestPermission` before that open. Do **not** skip the extra just because a `deviceList` instance has the same `deviceName`.
-3. Cold start with the module already plugged: if `hasPermission` on the list instance, open it. If not, **one** `requestPermission` (ACTION + `setPackage` + `FLAG_MUTABLE`, receiver `RECEIVER_EXPORTED`). If no system dialog / no grant extra, show **请拔掉再插入** — never loop 需要 USB 权限 / 授权 USB.
-4. Do **not** use `setComponent` (1.0.2: instant 被拒). Do **not** ship `targetSdk 26` (1.0.3: “built for an older Android”).
+2. Attach extra is an identity hint only. If `hasPermission` is false on extra **and** the `deviceList` copy, show **正在请求 USB 权限** and call `requestPermission` while resumed. Never `openDevice`. Never show 无法打开 / 系统已允许 USB in that state.
+3. `requestPermission` PendingIntent variants, in order, until `hasPermission` is true or the user refuses:
+   1. Activity context, `Intent(ACTION).setPackage(packageName)`, `FLAG_MUTABLE`, receiver `RECEIVER_EXPORTED` on the **application** context (not unregistered in `onPause` / `unbindActivity`).
+   2. Same without `setPackage`, `FLAG_MUTABLE | FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT` (API 34+).
+   3. Demo `flags=0` PendingIntent if the platform still allows it (API 31+ usually throws — catch and continue).
+   Do **not** use `setComponent` (1.0.2: instant 被拒). Instant `granted=false` without a pause is **not** 被拒 — try the next variant. Wait for the callback before showing Error. Do **not** ship `targetSdk 26`.
+4. After `hasPermission` is true, `openDevice` on that instance (try extra and list). Claim/UVC use whichever object actually opened.
 5. Do **not** stop the engine in `onPause` (the system USB dialog pauses the Activity). `stop()` only in `onDestroy` when `isFinishing`.
 6. Detach still uses a dynamic `USB_DEVICE_DETACHED` receiver (`RECEIVER_EXPORTED`).
-7. Connect failures must surface the real USB result (`openDevice` null/exception, claim errno, `controlTransfer` n), and must not claim we opened the opposite instance from the one we actually passed.
 
 VID `0x0BDA` / PID `0x3901` unchanged.
 
@@ -76,8 +79,8 @@ VID `0x0BDA` / PID `0x3901` unchanged.
 
 1. **USB_DEVICE_ATTACHED second Activity** — `launchMode="singleTask"` + `onNewIntent` so a plug-in does not spawn another Activity.
 2. Connect runs on `tiny1b-connect` under a mutex. Failures set `DeviceStatus.Error` with a Chinese `errorMessage` plus the underlying USB result (`openDevice` / claim / `controlTransfer`).
-3. In-app `requestPermission` is a **one-shot fallback** only. 1.0.5 treated instant `granted=false` as “tap 授权 USB again”, which never granted on hardware.
-4. After a system attach grant, open the Intent **EXTRA_DEVICE** first. 1.0.7 opened only the `deviceList` copy (same name skipped the extra) and failed with `hasPermission=false`. If extra open fails, try `deviceList`, then `requestPermission` on the list instance.
+3. In-app `requestPermission` is required when attach does not grant. Walk three PendingIntent variants; instant `granted=false` without pause is not 被拒. 1.0.5 treated that as “tap 授权 USB again”. 1.0.6–1.0.8 skipped request and called `openDevice` without permission.
+4. After `hasPermission` is true, open the instance that reports true. Error 无法打开 / 系统已允许 USB only when hasPermission was true and `openDevice` still failed.
 
 ## ISR
 
@@ -95,7 +98,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.8** (`versionCode` **9**).
+- Current: **1.0.9** (`versionCode` **10**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -108,7 +111,8 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 - **1.0.5**: drop vendor `.so` / JNI wrappers; Kotlin UVC. In-app `requestPermission` still did not show a system dialog on hardware (授权 USB loop).
 - **1.0.6**: USB grant via Activity `USB_DEVICE_ATTACHED` + `device_filter.xml`; open on attach intent without `requestPermission`. Hardware: grant worked, `openDevice` on the parcelled extra still showed 无法打开设备.
 - **1.0.7**: open the live `deviceList` Tiny1-B after grant; `setConfiguration`; USBDEVFS disconnect + force-claim unique VC/VS; real USB errors on the connect card. Hardware: grant was on Intent extra; list `hasPermission=false` and `openDevice(list)` returned null.
-- **1.0.8**: attach grant opens Intent `EXTRA_DEVICE` first (even when deviceName matches the list copy); do not require list `hasPermission`; fallback list + one `requestPermission` on that instance.
+- **1.0.8**: attach grant opens Intent `EXTRA_DEVICE` first (even when deviceName matches the list copy); do not require list `hasPermission`; fallback list + one `requestPermission` on that instance. Hardware: extra **and** list `hasPermission=false`, both `openDevice` null; attachGrant was a lie.
+- **1.0.9**: never `openDevice` unless `hasPermission`; show 正在请求 USB 权限 and walk targetSdk 35 `requestPermission` PI variants (setPackage+MUTABLE, implicit+UNSAFE, demo flags=0). Instant false is not 被拒. Open the instance that reports true.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk

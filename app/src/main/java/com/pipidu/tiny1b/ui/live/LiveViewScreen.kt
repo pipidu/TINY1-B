@@ -214,7 +214,7 @@ private fun StatusChip(status: DeviceStatus) {
         DeviceStatus.Live -> Live
         DeviceStatus.Sample -> Accent
         DeviceStatus.Error, DeviceStatus.PermissionDenied -> Hot
-        DeviceStatus.Connecting, DeviceStatus.PermissionNeeded -> Accent
+        DeviceStatus.Connecting, DeviceStatus.RequestingPermission, DeviceStatus.PermissionNeeded -> Accent
         DeviceStatus.Searching -> Muted
     }
     Row(
@@ -427,7 +427,8 @@ private fun ConnectPanel(
             Spacer(Modifier.height(20.dp))
             Text(
                 text = when (state.status) {
-                    DeviceStatus.PermissionNeeded -> "请重新插入 Tiny1-B"
+                    DeviceStatus.RequestingPermission -> "正在请求 USB 权限"
+                    DeviceStatus.PermissionNeeded -> "请保持应用在前台"
                     DeviceStatus.PermissionDenied -> "USB 权限被拒绝"
                     DeviceStatus.Error -> "连接失败"
                     DeviceStatus.Connecting -> "正在连接 Tiny1-B"
@@ -441,8 +442,9 @@ private fun ConnectPanel(
             Spacer(Modifier.height(10.dp))
             Text(
                 text = state.errorMessage ?: when (state.status) {
-                    DeviceStatus.PermissionNeeded -> "插入模组时，系统会询问是否允许本应用访问 USB，请选择「允许」。若没有弹窗，请拔掉再插入。"
-                    DeviceStatus.PermissionDenied -> "请拔掉模组再插入，并在系统弹窗中选择「允许」。"
+                    DeviceStatus.RequestingPermission -> "请在系统弹窗中选择「允许」。"
+                    DeviceStatus.PermissionNeeded -> "Tiny1-B 已连接时，请将应用保持在前台。系统会请求 USB 权限，请选择「允许」。"
+                    DeviceStatus.PermissionDenied -> "请点「重新扫描」，并在系统弹窗中选择「允许」。"
                     DeviceStatus.Connecting -> "正在打开 UVC 数据流…"
                     else -> "使用 USB OTG 连接 Infiray Tiny1-B 热像模组。VID 0BDA · PID 3901。"
                 },
@@ -451,7 +453,9 @@ private fun ConnectPanel(
                 textAlign = TextAlign.Center,
                 lineHeight = 19.sp,
             )
-            if (state.status == DeviceStatus.Connecting) {
+            if (state.status == DeviceStatus.Connecting ||
+                state.status == DeviceStatus.RequestingPermission
+            ) {
                 Spacer(Modifier.height(18.dp))
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth(0.6f).clip(RoundedCornerShape(8.dp)),
