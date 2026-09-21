@@ -112,6 +112,7 @@ class ThermalEngine(
     val state: StateFlow<EngineState> = _state.asStateFlow()
 
     private val frameCallback = IFrameCallback { frame ->
+        if (!previewing) return@IFrameCallback
         if (frame == null || frame.size < Tiny1BFormat.UVC_FRAME_BYTES) return@IFrameCallback
         latestFrame.set(frame.copyOf(Tiny1BFormat.UVC_FRAME_BYTES))
         synchronized(frameLock) { frameLock.notify() }
@@ -128,7 +129,11 @@ class ThermalEngine(
                         onPermissionDenied()
                     }
                 }
-                UsbControlBlock.USB_ATTACH -> tryOpenCamera("attach")
+                UsbControlBlock.USB_ATTACH -> {
+                    val device = msg.obj as? UsbDevice
+                    if (device != null && !isTiny1B(device)) return
+                    tryOpenCamera("attach")
+                }
                 UsbControlBlock.USB_DETACH -> onUsbDetach(msg.obj as? UsbDevice)
             }
         }
@@ -142,7 +147,10 @@ class ThermalEngine(
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    usbHandler.obtainMessage(UsbControlBlock.USB_ATTACH).sendToTarget()
+                    val device = extraUsbDevice(intent)
+                    val message = usbHandler.obtainMessage(UsbControlBlock.USB_ATTACH)
+                    message.obj = device
+                    usbHandler.sendMessage(message)
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = extraUsbDevice(intent)
@@ -161,6 +169,7 @@ class ThermalEngine(
 
     fun start() {
         if (running.getAndSet(true)) return
+        registerUsbReceiver()
         startWorker()
         if (settings.samplePreview) startSample()
     }
@@ -168,6 +177,7 @@ class ThermalEngine(
     fun stop() {
         running.set(false)
         usbHandler.removeCallbacks(attachRetryRunnable)
+        usbHandler.removeCallbacks(presenceCheckRunnable)
         usbHandler.removeCallbacks(recTick)
         usbHandler.removeCallbacks(clearHintRunnable)
         unregisterUsbReceiver()
@@ -191,15 +201,17 @@ class ThermalEngine(
 
     fun unbindActivity(activity: Activity) {
         if (this.activity === activity) {
-            unregisterUsbReceiver()
             this.activity = null
         }
     }
 
     fun onLaunchIntent(intent: Intent?): Boolean {
-        if (!running.get()) return false
+        val attached = intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED
+        val device = intent?.let { extraUsbDevice(it) }
+        if (attached && device != null && !isTiny1B(device)) return false
+        if (!running.get()) return attached
         retryConnect()
-        return intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED
+        return attached
     }
 
     fun onActivityResumed() {
@@ -212,7 +224,9 @@ class ThermalEngine(
 
     fun onActivityPaused() {
         activityResumed.set(false)
-        unregisterUsbReceiver()
+        // Keep the USB attach/detach receiver. ColorOS can pause the Activity
+        // on unplug; unregistering here misses USB_DEVICE_DETACHED and freezes
+        // the last frame with status still 已连接.
         // Do not destroy the JNI camera here. The USB permission dialog pauses
         // the Activity; the demo retries on resume after the grant is stored.
     }
@@ -425,6 +439,12 @@ class ThermalEngine(
 
     private fun tryOpenCamera(reason: String) {
         if (!running.get() || nativeLoadFailed) return
+        if (previewing && camera?.openStatus == true) {
+            if (findModule() == null) {
+                onUsbDetach(null)
+            }
+            return
+        }
         synchronized(cameraLock) {
             if (previewing && camera?.openStatus == true) {
                 return
@@ -443,11 +463,9 @@ class ThermalEngine(
             val module = findModule()
             if (module == null) {
                 if (previewing) {
-                    stopPreviewLocked()
-                    destroyCameraLocked()
+                    abandonCameraLocked()
                 }
                 showSearching()
-                if (settings.samplePreview) startSample()
                 scheduleRetry()
                 return
             }
@@ -504,6 +522,8 @@ class ThermalEngine(
             }
             previewing = true
             usbHandler.removeCallbacks(attachRetryRunnable)
+            usbHandler.removeCallbacks(presenceCheckRunnable)
+            usbHandler.post(presenceCheckRunnable)
             _state.update {
                 it.copy(
                     status = DeviceStatus.Live,
@@ -527,30 +547,33 @@ class ThermalEngine(
     }
 
     private fun onUsbDetach(device: UsbDevice?) {
-        if (device != null &&
-            (device.vendorId != Tiny1BFormat.VENDOR_ID || device.productId != Tiny1BFormat.PRODUCT_ID)
-        ) {
-            return
+        if (device != null && !isTiny1B(device)) return
+        // Compose/engine state first so the waiting-connect UI is on screen
+        // even if native teardown is slow. Never leave the last frame up.
+        enterWaitingUi("模组已断开。请重新插入 Tiny1-B。")
+        synchronized(cameraLock) {
+            abandonCameraLocked()
         }
+        usbHandler.removeCallbacks(attachRetryRunnable)
+        usbHandler.postDelayed(attachRetryRunnable, RETRY_MS)
+    }
+
+    private fun enterWaitingUi(detail: String) {
         latestFrame.set(null)
+        lastPlanes = null
         previewing = false
+        usbHandler.removeCallbacks(presenceCheckRunnable)
         runCatching { stopRecordingInternal("模组已断开，录像已停止") }
         _state.update {
             it.copy(
                 status = DeviceStatus.Searching,
                 statusDetail = "模组已断开",
                 bitmap = null,
-                errorMessage = null,
+                errorMessage = detail,
                 recording = false,
             )
         }
-        synchronized(cameraLock) {
-            previewing = false
-            abandonCameraLocked()
-        }
-        if (settings.samplePreview) startSample()
-        usbHandler.removeCallbacks(attachRetryRunnable)
-        usbHandler.postDelayed(attachRetryRunnable, RETRY_MS)
+        synchronized(frameLock) { frameLock.notifyAll() }
     }
 
     private fun ensureCameraLocked(activity: Activity): Boolean {
@@ -608,9 +631,10 @@ class ThermalEngine(
     }
 
     private fun findModule(): UsbDevice? =
-        usbManager.deviceList.values.firstOrNull {
-            it.vendorId == Tiny1BFormat.VENDOR_ID && it.productId == Tiny1BFormat.PRODUCT_ID
-        }
+        usbManager.deviceList.values.firstOrNull(::isTiny1B)
+
+    private fun isTiny1B(device: UsbDevice): Boolean =
+        device.vendorId == Tiny1BFormat.VENDOR_ID && device.productId == Tiny1BFormat.PRODUCT_ID
 
     private fun extraUsbDevice(intent: Intent): UsbDevice? {
         return if (Build.VERSION.SDK_INT >= 33) {
@@ -622,28 +646,23 @@ class ThermalEngine(
     }
 
     private fun registerUsbReceiver() {
-        val act = activity ?: return
         if (usbReceiverRegistered) return
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
         if (Build.VERSION.SDK_INT >= 33) {
-            act.registerReceiver(usbStateReceiver, filter, Context.RECEIVER_EXPORTED)
+            appContext.registerReceiver(usbStateReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
-            act.registerReceiver(usbStateReceiver, filter)
+            appContext.registerReceiver(usbStateReceiver, filter)
         }
         usbReceiverRegistered = true
     }
 
     private fun unregisterUsbReceiver() {
-        val act = activity
-        if (!usbReceiverRegistered || act == null) {
-            usbReceiverRegistered = false
-            return
-        }
-        runCatching { act.unregisterReceiver(usbStateReceiver) }
+        if (!usbReceiverRegistered) return
+        runCatching { appContext.unregisterReceiver(usbStateReceiver) }
         usbReceiverRegistered = false
     }
 
@@ -670,9 +689,10 @@ class ThermalEngine(
     private fun showSearching() {
         _state.update {
             it.copy(
-                status = if (settings.samplePreview) it.status else DeviceStatus.Searching,
+                status = DeviceStatus.Searching,
                 statusDetail = "未检测到 Tiny1-B",
-                errorMessage = if (settings.samplePreview) it.errorMessage else null,
+                bitmap = null,
+                errorMessage = null,
             )
         }
     }
@@ -745,6 +765,8 @@ class ThermalEngine(
 
     private fun processFrame(frame: ByteArray) {
         if (!previewing && !sampleRunning.get()) return
+        val liveStatus = _state.value.status
+        if (liveStatus != DeviceStatus.Live && liveStatus != DeviceStatus.Sample) return
         var planes = runCatching { FrameParser.parseUvcFrame(frame) }.getOrNull() ?: return
         planes = FrameParser.applyOrientation(planes, settings.rotation, settings.mirror)
         lastPlanes = planes
@@ -827,6 +849,17 @@ class ThermalEngine(
         }
     }
 
+    private val presenceCheckRunnable = object : Runnable {
+        override fun run() {
+            if (!running.get() || !previewing) return
+            if (findModule() == null) {
+                onUsbDetach(null)
+                return
+            }
+            usbHandler.postDelayed(this, PRESENCE_MS)
+        }
+    }
+
     private val clearHintRunnable = Runnable {
         if (recorder.recording) return@Runnable
         _state.update { it.copy(captureHint = null) }
@@ -836,6 +869,7 @@ class ThermalEngine(
         private const val TAG = "ThermalEngine"
         private const val RETRY_MS = 5000L
         private const val HINT_MS = 3500L
+        private const val PRESENCE_MS = 1000L
 
         private fun formatMmSs(totalSec: Int): String {
             val m = totalSec / 60

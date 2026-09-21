@@ -3,6 +3,7 @@ package com.pipidu.tiny1b.ui.settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,9 +45,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.content.Intent
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.graphics.Brush
 import com.pipidu.tiny1b.core.DisplayRotation
 import com.pipidu.tiny1b.core.IsrScale
+import com.pipidu.tiny1b.core.PaletteId
+import com.pipidu.tiny1b.core.Palettes
 import com.pipidu.tiny1b.device.EngineState
+import com.pipidu.tiny1b.ui.isLiveLike
 import com.pipidu.tiny1b.ui.theme.Accent
 import com.pipidu.tiny1b.ui.theme.AccentSoft
 import com.pipidu.tiny1b.ui.theme.Hot
@@ -73,6 +82,8 @@ fun SettingsScreen(
     onFahrenheit: (Boolean) -> Unit,
     onSample: (Boolean) -> Unit,
     onDenoise: (Boolean) -> Unit,
+    onPalette: (PaletteId) -> Unit,
+    onShutter: () -> Unit,
     onShutterMax: (Int) -> Unit,
     onKbCal: (Boolean) -> Unit,
     onCheckUpdate: () -> Unit,
@@ -104,6 +115,11 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Section("画面") {
+                Text("色板", color = Ink, fontSize = 14.sp)
+                Text("伪彩色只作用在热成像画面上。", color = Muted, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                PalettePicker(selected = state.palette, onSelect = onPalette)
+                Spacer(Modifier.height(8.dp))
                 Text("软件 ISR 超分辨率", color = Ink, fontSize = 14.sp)
                 Text("温度场双线性放大后叠亮度细节。比旧版双三次快很多，测温仍在旋转后的原生网格上取样。", color = Muted, fontSize = 12.sp)
                 Spacer(Modifier.height(8.dp))
@@ -150,6 +166,16 @@ fun SettingsScreen(
                 ToggleRow("使用华氏度", "界面温度改为 °F", state.useFahrenheit, onFahrenheit)
             }
             Section("模组") {
+                Text("手动快门", color = Ink, fontSize = 14.sp)
+                Text("对焦或画面发糊时点一次，触发模组快门校正。仅在已连接时生效。", color = Muted, fontSize = 12.sp)
+                Spacer(Modifier.height(4.dp))
+                Button(
+                    onClick = onShutter,
+                    enabled = isLiveLike(state.status),
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("快门校正") }
+                Spacer(Modifier.height(8.dp))
                 Text("自动快门最大间隔  ${state.shutterMaxSeconds} 秒", color = Ink, fontSize = 14.sp)
                 Slider(
                     value = state.shutterMaxSeconds.toFloat(),
@@ -162,7 +188,7 @@ fun SettingsScreen(
                         inactiveTrackColor = SurfaceMuted,
                     ),
                 )
-                Text("手动快门请在实时画面点「快门」。KB 二次标定仅在已连接时生效。", color = Muted, fontSize = 12.sp)
+                Text("手动快门在上方；KB 二次标定仅在已连接时生效。", color = Muted, fontSize = 12.sp)
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { onKbCal(true) }) { Text("开启 KB 标定", color = Accent) }
@@ -248,6 +274,36 @@ fun SettingsScreen(
                 Text("USB 取流使用厂商 demo 的 libUVCCamera（Java 包 com.zz.infisense.camera）。应用 ID 仍是 com.pipidu.tiny1b。", color = Muted, fontSize = 12.sp)
             }
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun PalettePicker(selected: PaletteId, onSelect: (PaletteId) -> Unit) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(Palettes.all()) { palette ->
+            val active = palette.id == selected
+            Column(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .border(1.dp, if (active) Accent else Outline, RoundedCornerShape(14.dp))
+                    .background(if (active) AccentSoft else SurfaceMuted)
+                    .clickable { onSelect(palette.id) }
+                    .padding(8.dp)
+                    .width(72.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                val colors = listOf(0, 80, 160, 255).map { Color(palette.lut[it]) }
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(18.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Brush.horizontalGradient(colors)),
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(palette.id.labelZh, color = if (active) Accent else Ink, fontSize = 12.sp)
+            }
         }
     }
 }

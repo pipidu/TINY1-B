@@ -16,7 +16,7 @@ The product **is** the Infiray Android demo USB/JNI camera path, with this repo�
 
 ## Current status
 
-On `main`: **1.0.13** (`versionCode` **14**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Temperature legend lives in the top FPS bar. Live image sits **below** the top card (not under it). Photo / video save to the system album. In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight).
+On `main`: **1.0.14** (`versionCode` **15**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Temperature legend is a strip **below** the live image (not over pixels). Live dock is **拍照 / 录像 / 测温** only. In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight).
 
 ## Current architecture
 
@@ -28,9 +28,9 @@ app/src/main/jniLibs/arm64-v8a/              vendor .so (arm64 only)
 keystore/ Project signing key (required so later APKs overwrite the same install)
 ```
 
-- `ThermalEngine` constructs `UVCCamera(0x0BDA, 0x3901, 256, 384, activity, handler)`, `create()`, then `open()` with the demo 5s retry. `onFrame` → `FrameParser.parseUvcFrame`. Unplug uses `UVCCamera.abandon()` (no native stop/release/destroy) and returns to the waiting-connect card.
-- `LiveViewScreen` is a Column: top chrome, thermal stage, dock (拍照 / 录像 / 快门 / 测温 / 色板 / ISR / 旋转). Empty/permission/error cards when not live.
-- `SettingsScreen` covers ISR, 降噪, min/max, center, shutter (max **120s**), KB cal, sample preview, **检查更新**.
+- `ThermalEngine` constructs `UVCCamera(0x0BDA, 0x3901, 256, 384, activity, handler)`, `create()`, then `open()` with the demo 5s retry. `onFrame` → `FrameParser.parseUvcFrame`. Unplug: set Searching + `bitmap=null` first, then `UVCCamera.abandon()` (no native stop/release/destroy). Do not leave a frozen last frame with status 已连接.
+- `LiveViewScreen` is a Column: top chrome (title / fps / status / 设置), thermal stage, **below-image** legend strip + dock **拍照 / 录像 / 测温**. 快门 / 色板 / ISR / 旋转 live in Settings. Empty/permission/error cards when not live.
+- `SettingsScreen` covers 色板, ISR, 画面旋转, 降噪, min/max, center, **手动快门**, shutter max **120s**, KB cal, sample preview, **检查更新**.
 - `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated). `OneShotGate` + immediate `Downloading` so double-tap cannot start two downloads.
 
 ## UI theme
@@ -54,10 +54,10 @@ Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on t
 2. `UsbControlBlock.getUsbCamera`: walk `UsbManager.getDeviceList()` for VID/PID, require UVC control interface (class 14 / subclass 1) + interrupt endpoint, then **`hasPermission`**. If false: `requestPermission` with **flags=0** and return false. **Never** invent Kotlin `openDevice` / attach-extra / deviceList grant logic from 1.0.5–1.0.9.
 3. `UVCCamera.open()`: `getUsbCamera` then `nativeConnect(mNativePtr, vid, pid, fd, bus, dev, usbfs)` then `nativeSetPreviewSize`. `getFileDescriptor()` is the only `openDevice` call, and only after `hasPermission` is true (demo layout).
 4. On grant, handler `USB_PERMISSION` / `USB_PERMIT` (or the 5s `attachRetryRunnable`) calls `open()` again now that permission exists, then `setFrameCallback` + `startPreview`.
-5. Dynamic `USB_DEVICE_ATTACHED` / `USB_DEVICE_DETACHED` receivers (demo). **No** Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` — that path did not grant on ColorOS.
+5. Activity `USB_DEVICE_ATTACHED` + `res/xml/device_filter.xml` (VID `0x0BDA` / PID `0x3901`, decimal 3034 / 14593) so Android **offers this app** when the camera is inserted. `singleTask` + `onNewIntent` brings the existing Activity; then the **demo JNI** `tryOpenCamera` / `requestPermission` flags=0 path runs. Do **not** open the attach `EXTRA_DEVICE` with Kotlin `UsbManager` (1.0.6–1.0.9). Also keep a dynamic `USB_DEVICE_ATTACHED` / `USB_DEVICE_DETACHED` receiver on the **application** context for the engine lifetime — do **not** unregister it in `onPause` (OEM pause-on-unplug misses DETACHED and freezes 已连接). DETACHED is Tiny1-B only.
 6. `targetSdk` **26** like the demo. Do **not** ship targetSdk 33–35 USB PendingIntent variants (`setPackage` + `FLAG_MUTABLE`, etc.). Those never showed a working dialog on this phone.
 7. compileSdk 35 needs `registerReceiver(..., RECEIVER_EXPORTED)` on API 33+. That is the only USB API addition; permission PI stays flags=0.
-8. Do **not** destroy the JNI camera in `onPause` (USB dialog pauses the Activity). On **unplug**, switch UI to Searching first, then `UVCCamera.abandon()`: drop the Java frame callback and close `UsbDeviceConnection`, but **skip** `nativeStopPreview` / `nativeRelease` / `nativeDestroy` (those SIGSEGV after the device is gone). Recreate a new `UVCCamera` on the next open. Call `destroy()` only when the Activity is finishing with USB still present. Resume posts the same 5s open retry as the demo.
+8. Do **not** destroy the JNI camera in `onPause` (USB dialog pauses the Activity). On **unplug**, update Compose/engine state **first** (`DeviceStatus.Searching`, `bitmap=null`, chip 未连接), then `UVCCamera.abandon()`: drop the Java frame callback and close `UsbDeviceConnection`, but **skip** `nativeStopPreview` / `nativeRelease` / `nativeDestroy` (those SIGSEGV after the device is gone). Recreate a new `UVCCamera` on the next open. While Live, if `deviceList` no longer has Tiny1-B, take the same detach path (do not early-return `tryOpenCamera` as still previewing). Call `destroy()` only when the Activity is finishing with USB still present. Resume posts the same 5s open retry as the demo.
 9. Each JNI frame is **196608** bytes. Demo `onFrame`: first half → YUYV **192×256** (`imageWidth = 384/2`, `imageHeight = 256`), second half → Kelvin-16 **192×256**. `FrameParser` matches that split and does **not** reshape as 256×192 then rotate (1.0.10: four horizontal bands + left/right stripes). Y is even YUYV bytes. Palette / ISR / denoise / measurement use this native temperature grid. `°C = raw/16 − 273.15`.
 10. Shutter / KB cal / shutter-max stay on `UsbControlBlock` control transfers: manual shutter `0x0345`, KB cal `0x0341`, shutter max get `0x038A` / set `0x03C4` (`bmRequestType` `0x41` / `0xC1`).
 
@@ -70,6 +70,7 @@ Do **not** add back: `UsbHostController`, `UvcCapture`, `Usbfs`, `Tiny1BCommands
 3. While resumed, `open()` is retried every **5s** until it returns true (demo `attachRetryRunnable`).
 4. Failures set `DeviceStatus.Error` / permission cards with a Chinese message. **重新扫描** posts an immediate retry.
 5. Instant `granted=false` from the demo receiver is treated as 被拒 (demo). User taps 重新扫描 to ask again.
+6. Unplug: `USB_DEVICE_DETACHED` (Tiny1-B VID/PID only) or a 1s `deviceList` poll while Live. Always `Searching` + `bitmap=null` **before** `abandon()`. Chip shows 未连接. Never keep a frozen last frame.
 
 ## ISR
 
@@ -77,15 +78,15 @@ Do **not** add back: `UsbHostController`, `UvcCapture`, `Usbfs`, `Tiny1BCommands
 
 ## Display orientation
 
-Settings → 画面 → **画面旋转** (0° / 90° / 180° / 270°), also the live-view dock **旋转** button (cycles clockwise). Stored in `tiny1b_settings`. Custom measurement points remap with the rotation. Horizontal mirror still applies after rotation.
+Settings → 画面 → **画面旋转** (0° / 90° / 180° / 270°). Stored in `tiny1b_settings`. Custom measurement points remap with the rotation. Horizontal mirror still applies after rotation. There is **no** live-dock 旋转 button.
 
 ## UI chrome
 
-The temperature color legend is **inside the top status card** (min · gradient · max · fps). Do not put a vertical bar on the right of the live image — it covered the scene. The live image is in a `Column` **below** that card (and above the dock) so the top chrome does not cover the scene.
+Column: top card (title / fps / status / 设置) → **live image (fully visible)** → bottom chrome. The temperature legend (min · palette bar · max) is a **strip below the image**, never overlaid on pixels and never in the top card. Photo / video / 测温 sit in that same bottom chrome. 快门 / 色板 / ISR / 旋转 belong in Settings. Do not put a vertical bar on the right of the live image.
 
 ## Capture
 
-Dock **拍照** / **录像**. JPEG and H.264 MP4 (no mic) go to the system album (`Pictures/TINY1-B`, `Movies/TINY1-B`) via MediaStore on API 29+; API 26–28 uses `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion 28`) and a media scan. Unplug stops an in-progress recording. Sample preview can also capture.
+Dock **拍照** / **录像** / **测温** only (with the legend strip in the same bottom chrome). JPEG and H.264 MP4 (no mic) go to the system album (`Pictures/TINY1-B`, `Movies/TINY1-B`) via MediaStore on API 29+; API 26–28 uses `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion 28`) and a media scan. Unplug stops an in-progress recording. Sample preview can also capture.
 
 ## Denoise
 
@@ -99,7 +100,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.13** (`versionCode` **14**).
+- Current: **1.0.14** (`versionCode` **15**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -118,6 +119,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 - **1.0.11**: frame decode matches demo `onFrame` (192×256 YUYV + Kelvin-16, no 256×192 rotate). USB/JNI unchanged.
 - **1.0.12**: persisted 0/90/180/270 display rotation; bilinear ISR so 超分 does not crush fps; temperature legend moved into the top FPS card.
 - **1.0.13**: unplug returns to waiting-connect (no native destroy SIGSEGV); 测温 must be on to add points; 拍照/录像; shutter max 120s; update download is single-flight; live image sits below the top card.
+- **1.0.14**: live dock only 拍照/录像/测温; 快门/色板/ISR/旋转 in Settings; legend strip **below** the image. Unplug clears the frame and sets 未连接 (DETACHED + device-list poll; do not freeze 已连接). Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` restores the system “open with this app” chooser; connect is still demo JNI.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk

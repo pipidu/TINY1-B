@@ -21,20 +21,13 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.MyLocation
-import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PhotoCamera
-import androidx.compose.material.icons.outlined.ScreenRotation
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.ShutterSpeed
 import androidx.compose.material.icons.outlined.Usb
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Button
@@ -62,8 +55,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.pipidu.tiny1b.core.IsrScale
-import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.core.Palettes
 import com.pipidu.tiny1b.device.DeviceStatus
 import com.pipidu.tiny1b.device.EngineState
@@ -87,10 +78,6 @@ fun LiveViewScreen(
     state: EngineState,
     onOpenSettings: () -> Unit,
     onRetry: () -> Unit,
-    onShutter: () -> Unit,
-    onPalette: (PaletteId) -> Unit,
-    onIsr: (IsrScale) -> Unit,
-    onRotate: () -> Unit,
     onMeasureEdit: (Boolean) -> Unit,
     onAddOrSelect: (Float, Float) -> Unit,
     onBeginDrag: (Float, Float) -> Long?,
@@ -102,8 +89,9 @@ fun LiveViewScreen(
     onToggleRecord: () -> Unit,
     onStorageDenied: () -> Unit,
 ) {
-    var paletteOpen by remember { mutableStateOf(false) }
     val live = isLiveLike(state.status)
+    val frame = state.bitmap
+    val showingImage = live && frame != null
     val withStoragePermission = rememberStorageAction(onDenied = onStorageDenied)
 
     Column(
@@ -115,10 +103,8 @@ fun LiveViewScreen(
     ) {
         TopChrome(
             state = state,
-            showLegend = live && state.bitmap != null,
             onOpenSettings = onOpenSettings,
-            modifier = Modifier
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
 
         Box(
@@ -126,9 +112,9 @@ fun LiveViewScreen(
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-            if (live && state.bitmap != null) {
+            if (frame != null && showingImage) {
                 ThermalStage(
-                    bitmap = state.bitmap,
+                    bitmap = frame,
                     points = state.measurement.points,
                     fahrenheit = state.useFahrenheit,
                     measureEdit = state.measureEdit,
@@ -146,51 +132,16 @@ fun LiveViewScreen(
             }
         }
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            val hint = state.captureHint
-            if (!hint.isNullOrBlank()) {
-                CaptureHintBar(text = hint, recording = state.recording)
-            }
-            if (state.measureEdit && live) {
-                MeasureHintBar(
-                    count = state.userPointCount,
-                    onRemoveSelected = onRemoveSelected,
-                    onClear = onClearPoints,
-                )
-            }
-            if (paletteOpen) {
-                PaletteStrip(selected = state.palette, onSelect = {
-                    onPalette(it)
-                    paletteOpen = false
-                })
-            }
-            BottomDock(
-                live = live,
-                measureEdit = state.measureEdit,
-                recording = state.recording,
-                isr = state.isr,
-                rotationLabel = state.rotation.labelZh,
-                onPhoto = { withStoragePermission(onCapturePhoto) },
-                onRecord = { withStoragePermission(onToggleRecord) },
-                onShutter = onShutter,
-                onPalette = { paletteOpen = !paletteOpen },
-                onMeasure = { onMeasureEdit(!state.measureEdit) },
-                onIsr = {
-                    val next = when (state.isr) {
-                        IsrScale.OFF -> IsrScale.X2
-                        IsrScale.X2 -> IsrScale.X4
-                        IsrScale.X4 -> IsrScale.OFF
-                    }
-                    onIsr(next)
-                },
-                onRotate = onRotate,
-            )
-        }
+        BottomChrome(
+            state = state,
+            live = live,
+            showingImage = showingImage,
+            onPhoto = { withStoragePermission(onCapturePhoto) },
+            onRecord = { withStoragePermission(onToggleRecord) },
+            onMeasure = { onMeasureEdit(!state.measureEdit) },
+            onRemoveSelected = onRemoveSelected,
+            onClearPoints = onClearPoints,
+        )
     }
 }
 
@@ -223,63 +174,35 @@ private fun rememberStorageAction(onDenied: () -> Unit): (() -> Unit) -> Unit {
 @Composable
 private fun TopChrome(
     state: EngineState,
-    showLegend: Boolean,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
+    Row(
         modifier = modifier
             .fillMaxWidth()
             .shadow(2.dp, RoundedCornerShape(22.dp), clip = false)
             .clip(RoundedCornerShape(22.dp))
-            .background(Surface.copy(alpha = 0.96f))
+            .background(Surface)
             .border(1.dp, Outline, RoundedCornerShape(22.dp))
             .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column {
-                Text("TINY1-B", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp)
-                if (!showLegend) {
-                    Text("热成像 · 红外测温", color = Muted, fontSize = 12.sp)
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (state.recording) {
-                    RecordingChip()
-                }
-                StatusChip(state.status)
-                IconButton(onClick = onOpenSettings) {
-                    Icon(Icons.Outlined.Settings, contentDescription = "设置", tint = Ink)
-                }
-            }
+        Column {
+            Text("TINY1-B", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp)
+            Text(
+                if (state.fps > 0) "${state.fps} fps" else "热成像 · 红外测温",
+                color = Muted,
+                fontSize = 12.sp,
+            )
         }
-        if (showLegend) {
-            Spacer(Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(formatTemp(state.colorBarMin, state.useFahrenheit), color = Cold, fontSize = 11.sp)
-                val lut = Palettes.get(state.palette).lut
-                val colors = remember(state.palette) {
-                    listOf(0, 64, 128, 192, 255).map { Color(lut[it]) }
-                }
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .height(10.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Brush.horizontalGradient(colors)),
-                )
-                Text(formatTemp(state.colorBarMax, state.useFahrenheit), color = Hot, fontSize = 11.sp)
-                if (state.fps > 0) {
-                    Text("${state.fps} fps", color = Muted, fontSize = 12.sp)
-                }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (state.recording) {
+                RecordingChip()
+            }
+            StatusChip(state.status)
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Outlined.Settings, contentDescription = "设置", tint = Ink)
             }
         }
     }
@@ -323,30 +246,41 @@ private fun RecordingChip() {
 }
 
 @Composable
-private fun BottomDock(
+private fun BottomChrome(
+    state: EngineState,
     live: Boolean,
-    measureEdit: Boolean,
-    recording: Boolean,
-    isr: IsrScale,
-    rotationLabel: String,
+    showingImage: Boolean,
     onPhoto: () -> Unit,
     onRecord: () -> Unit,
-    onShutter: () -> Unit,
-    onPalette: () -> Unit,
     onMeasure: () -> Unit,
-    onIsr: () -> Unit,
-    onRotate: () -> Unit,
+    onRemoveSelected: () -> Unit,
+    onClearPoints: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
             .shadow(6.dp, RoundedCornerShape(28.dp), clip = false)
             .clip(RoundedCornerShape(28.dp))
             .background(Surface)
             .border(1.dp, Outline, RoundedCornerShape(28.dp))
-            .padding(horizontal = 10.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        if (showingImage) {
+            LegendStrip(state = state)
+        }
+        val hint = state.captureHint
+        if (!hint.isNullOrBlank()) {
+            CaptureHintBar(text = hint, recording = state.recording)
+        }
+        if (state.measureEdit && live) {
+            MeasureHintBar(
+                count = state.userPointCount,
+                onRemoveSelected = onRemoveSelected,
+                onClear = onClearPoints,
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -354,24 +288,37 @@ private fun BottomDock(
         ) {
             DockItem("拍照", Icons.Outlined.PhotoCamera, enabled = live, onClick = onPhoto)
             DockItem(
-                if (recording) "停止" else "录像",
+                if (state.recording) "停止" else "录像",
                 Icons.Outlined.Videocam,
-                active = recording,
+                active = state.recording,
                 enabled = live,
                 onClick = onRecord,
             )
-            DockItem("快门", Icons.Outlined.ShutterSpeed, enabled = live, onClick = onShutter)
-            DockItem("测温", Icons.Outlined.MyLocation, active = measureEdit, onClick = onMeasure)
+            DockItem("测温", Icons.Outlined.MyLocation, active = state.measureEdit, onClick = onMeasure)
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            DockItem("色板", Icons.Outlined.Palette, onClick = onPalette)
-            DockItem(isr.labelZh, Icons.Outlined.AutoFixHigh, active = isr != IsrScale.OFF, onClick = onIsr)
-            DockItem(rotationLabel, Icons.Outlined.ScreenRotation, active = rotationLabel != "0°", onClick = onRotate)
-        }
+    }
+}
+
+@Composable
+private fun LegendStrip(state: EngineState) {
+    val lut = Palettes.get(state.palette).lut
+    val colors = remember(state.palette) {
+        listOf(0, 64, 128, 192, 255).map { Color(lut[it]) }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(formatTemp(state.colorBarMin, state.useFahrenheit), color = Cold, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Box(
+            Modifier
+                .weight(1f)
+                .height(12.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Brush.horizontalGradient(colors)),
+        )
+        Text(formatTemp(state.colorBarMax, state.useFahrenheit), color = Hot, fontSize = 12.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -394,50 +341,11 @@ private fun DockItem(
             .clip(RoundedCornerShape(16.dp))
             .background(if (active) AccentSoft else Color.Transparent)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
     ) {
-        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
+        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
         Spacer(Modifier.height(4.dp))
-        Text(label, color = tint, fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun PaletteStrip(selected: PaletteId, onSelect: (PaletteId) -> Unit) {
-    LazyRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .shadow(4.dp, RoundedCornerShape(20.dp), clip = false)
-            .clip(RoundedCornerShape(20.dp))
-            .background(Surface)
-            .border(1.dp, Outline, RoundedCornerShape(20.dp))
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        items(Palettes.all()) { palette ->
-            val active = palette.id == selected
-            Column(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(14.dp))
-                    .border(1.dp, if (active) Accent else Outline, RoundedCornerShape(14.dp))
-                    .background(if (active) AccentSoft else Surface)
-                    .clickable { onSelect(palette.id) }
-                    .padding(8.dp)
-                    .width(72.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                val colors = listOf(0, 80, 160, 255).map { Color(palette.lut[it]) }
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(18.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Brush.horizontalGradient(colors)),
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(palette.id.labelZh, color = Ink, fontSize = 12.sp)
-            }
-        }
+        Text(label, color = tint, fontSize = 12.sp)
     }
 }
 
@@ -446,9 +354,8 @@ private fun CaptureHintBar(text: String, recording: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(if (recording) Hot.copy(alpha = 0.10f) else Surface)
-            .border(1.dp, if (recording) Hot.copy(alpha = 0.35f) else Outline, RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (recording) Hot.copy(alpha = 0.10f) else SurfaceMuted)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
@@ -460,12 +367,7 @@ private fun CaptureHintBar(text: String, recording: Boolean) {
 @Composable
 private fun MeasureHintBar(count: Int, onRemoveSelected: () -> Unit, onClear: () -> Unit) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(Surface)
-            .border(1.dp, Outline, RoundedCornerShape(18.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("点按添加 · 拖动移动 · 长按删除  · 已有 ${count} 点", color = Ink, fontSize = 12.sp, modifier = Modifier.weight(1f))

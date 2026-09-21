@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Infiray Tiny1-B. Decimal: 0x0BDA = 3034, 0x3901 = 14593. -->
+    <usb-device
+        vendor-id="3034"
+        product-id="14593" />
+</resources>
