@@ -1,7 +1,7 @@
 package com.pipidu.tiny1b.ui.theme
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -9,27 +9,32 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-val Ink = Color(0xFF07080D)
-val InkElevated = Color(0xFF12141C)
-val InkHigh = Color(0xFF1B2030)
-val Sand = Color(0xFFF4F1EA)
-val Mist = Color(0xFF9AA3B5)
-val Ember = Color(0xFFFF8A3D)
-val Hot = Color(0xFFFF4B4B)
-val Cold = Color(0xFF5AB6FF)
-val Live = Color(0xFF3DFFB0)
+val Paper = Color(0xFFF4F6FA)
+val Surface = Color(0xFFFFFFFF)
+val SurfaceMuted = Color(0xFFE8EDF4)
+val Ink = Color(0xFF1C2430)
+val Muted = Color(0xFF5B6778)
+val Accent = Color(0xFF2563EB)
+val AccentSoft = Color(0xFFDBEAFE)
+val Outline = Color(0xFFD0D7E2)
+val Hot = Color(0xFFE11D48)
+val Cold = Color(0xFF0284C7)
+val Live = Color(0xFF059669)
 
-private val Scheme = darkColorScheme(
-    primary = Ember,
-    onPrimary = Color(0xFF1A0B00),
+private val Scheme = lightColorScheme(
+    primary = Accent,
+    onPrimary = Color.White,
     secondary = Cold,
-    background = Ink,
-    surface = InkElevated,
-    onBackground = Sand,
-    onSurface = Sand,
-    onSurfaceVariant = Mist,
-    outline = Color(0xFF2A3144),
+    background = Paper,
+    surface = Surface,
+    onBackground = Ink,
+    onSurface = Ink,
+    onSurfaceVariant = Muted,
+    outline = Outline,
     error = Hot,
+    surfaceContainer = SurfaceMuted,
+    primaryContainer = AccentSoft,
+    onPrimaryContainer = Color(0xFF1E3A8A),
 )
 
 @Composable
@@ -41,24 +46,24 @@ fun Tiny1BTheme(content: @Composable () -> Unit) {
                 fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 28.sp,
-                color = Sand,
+                color = Ink,
             ),
             titleMedium = TextStyle(
                 fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.Medium,
                 fontSize = 16.sp,
-                color = Sand,
+                color = Ink,
             ),
             labelLarge = TextStyle(
                 fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.Medium,
                 fontSize = 13.sp,
-                color = Sand,
+                color = Ink,
             ),
             bodyMedium = TextStyle(
                 fontFamily = FontFamily.SansSerif,
                 fontSize = 14.sp,
-                color = Sand,
+                color = Ink,
             ),
         ),
         content = content,

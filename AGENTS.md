@@ -12,7 +12,7 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-On `main`: Compose app, USB session, ISR, display denoise (default off), palettes, min/max + center + user points, in-app GitHub update. Connect path is **crash-survivable** (Java/JNI exceptions become a Chinese error card). No vendor demo tree in git.
+On `main`: Compose app, **light UI** (paper surfaces, dark text, blue accent), USB session, ISR, display denoise (default off), palettes, min/max + center + user points, in-app GitHub update. Connect path is **crash-survivable** (Java/JNI exceptions become a Chinese error card). No vendor demo tree in git.
 
 ## Current architecture
 
@@ -26,6 +26,21 @@ keystore/ Project signing key (required so later APKs overwrite the same install
 - `LiveViewScreen` is connect-or-live: empty/permission/error cards, thermal stage, palettes, measurement dock.
 - `SettingsScreen` covers ISR, 降噪, min/max, center, shutter, KB cal, sample preview, **检查更新**.
 - `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated).
+
+## UI theme
+
+Primary look is **light** (`Theme.kt` `lightColorScheme`):
+
+| Token | Hex | Use |
+|-------|-----|-----|
+| Paper | `#F4F6FA` | page / window / system bars |
+| Surface | `#FFFFFF` | cards, top chrome, bottom dock, updater sections |
+| Ink | `#1C2430` | primary text / icons |
+| Muted | `#5B6778` | secondary text |
+| Accent | `#2563EB` | buttons, active chips, switches |
+| Hot / Cold / Live | `#E11D48` / `#0284C7` / `#059669` | status + image markers |
+
+Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on the stage use a dark chip so they stay readable on any LUT. Settings, live view, empty/permission/error cards, and updater dialogs all use the same light surfaces.
 
 ## Tiny1-B integration
 

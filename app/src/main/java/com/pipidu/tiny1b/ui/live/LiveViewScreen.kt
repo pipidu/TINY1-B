@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -59,15 +60,17 @@ import com.pipidu.tiny1b.device.EngineState
 import com.pipidu.tiny1b.ui.formatTemp
 import com.pipidu.tiny1b.ui.isLiveLike
 import com.pipidu.tiny1b.ui.labelZh
+import com.pipidu.tiny1b.ui.theme.Accent
+import com.pipidu.tiny1b.ui.theme.AccentSoft
 import com.pipidu.tiny1b.ui.theme.Cold
-import com.pipidu.tiny1b.ui.theme.Ember
 import com.pipidu.tiny1b.ui.theme.Hot
 import com.pipidu.tiny1b.ui.theme.Ink
-import com.pipidu.tiny1b.ui.theme.InkElevated
-import com.pipidu.tiny1b.ui.theme.InkHigh
 import com.pipidu.tiny1b.ui.theme.Live
-import com.pipidu.tiny1b.ui.theme.Mist
-import com.pipidu.tiny1b.ui.theme.Sand
+import com.pipidu.tiny1b.ui.theme.Muted
+import com.pipidu.tiny1b.ui.theme.Outline
+import com.pipidu.tiny1b.ui.theme.Paper
+import com.pipidu.tiny1b.ui.theme.Surface
+import com.pipidu.tiny1b.ui.theme.SurfaceMuted
 
 @Composable
 fun LiveViewScreen(
@@ -89,7 +92,7 @@ fun LiveViewScreen(
     var paletteOpen by remember { mutableStateOf(false) }
     val live = isLiveLike(state.status)
 
-    Box(modifier = Modifier.fillMaxSize().background(Ink)) {
+    Box(modifier = Modifier.fillMaxSize().background(Paper)) {
         if (live && state.bitmap != null) {
             ThermalStage(
                 bitmap = state.bitmap,
@@ -179,21 +182,27 @@ private fun TopChrome(
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .shadow(2.dp, RoundedCornerShape(22.dp), clip = false)
+            .clip(RoundedCornerShape(22.dp))
+            .background(Surface.copy(alpha = 0.96f))
+            .border(1.dp, Outline, RoundedCornerShape(22.dp))
+            .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column {
-            Text("TINY1-B", color = Sand, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.4.sp)
-            Text("热成像 · 红外测温", color = Mist, fontSize = 12.sp)
+            Text("TINY1-B", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp)
+            Text("热成像 · 红外测温", color = Muted, fontSize = 12.sp)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             StatusChip(state.status)
             if (state.fps > 0) {
-                Text("${state.fps} fps", color = Mist, fontSize = 12.sp)
+                Text("${state.fps} fps", color = Muted, fontSize = 12.sp)
             }
             IconButton(onClick = onOpenSettings) {
-                Icon(Icons.Outlined.Settings, contentDescription = "设置", tint = Sand)
+                Icon(Icons.Outlined.Settings, contentDescription = "设置", tint = Ink)
             }
         }
     }
@@ -203,21 +212,21 @@ private fun TopChrome(
 private fun StatusChip(status: DeviceStatus) {
     val color = when (status) {
         DeviceStatus.Live -> Live
-        DeviceStatus.Sample -> Ember
+        DeviceStatus.Sample -> Accent
         DeviceStatus.Error, DeviceStatus.PermissionDenied, DeviceStatus.JniUnavailable -> Hot
-        DeviceStatus.Connecting, DeviceStatus.PermissionNeeded -> Ember
-        DeviceStatus.Searching -> Mist
+        DeviceStatus.Connecting, DeviceStatus.PermissionNeeded -> Accent
+        DeviceStatus.Searching -> Muted
     }
     Row(
         modifier = Modifier
             .clip(CircleShape)
-            .background(InkHigh)
+            .background(SurfaceMuted)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Box(Modifier.size(7.dp).clip(CircleShape).background(color))
-        Text(status.labelZh(), color = Sand, fontSize = 12.sp)
+        Text(status.labelZh(), color = Ink, fontSize = 12.sp)
     }
 }
 
@@ -234,7 +243,12 @@ private fun ColorBar(
         listOf(0, 64, 128, 192, 255).map { Color(lut[it]) }.reversed()
     }
     Column(
-        modifier = modifier.width(46.dp),
+        modifier = modifier
+            .width(52.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Surface.copy(alpha = 0.92f))
+            .border(1.dp, Outline, RoundedCornerShape(16.dp))
+            .padding(vertical = 8.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(formatTemp(maxC, fahrenheit), color = Hot, fontSize = 10.sp)
@@ -265,8 +279,10 @@ private fun BottomDock(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .shadow(6.dp, RoundedCornerShape(28.dp), clip = false)
             .clip(RoundedCornerShape(28.dp))
-            .background(Color(0xE612141C))
+            .background(Surface)
+            .border(1.dp, Outline, RoundedCornerShape(28.dp))
             .padding(horizontal = 10.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
@@ -288,14 +304,15 @@ private fun DockItem(
     onClick: () -> Unit,
 ) {
     val tint = when {
-        !enabled -> Mist.copy(alpha = 0.35f)
-        active -> Ember
-        else -> Sand
+        !enabled -> Muted.copy(alpha = 0.35f)
+        active -> Accent
+        else -> Ink
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
+            .background(if (active) AccentSoft else Color.Transparent)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
@@ -310,8 +327,10 @@ private fun PaletteStrip(selected: PaletteId, onSelect: (PaletteId) -> Unit) {
     LazyRow(
         modifier = Modifier
             .fillMaxWidth()
+            .shadow(4.dp, RoundedCornerShape(20.dp), clip = false)
             .clip(RoundedCornerShape(20.dp))
-            .background(InkElevated)
+            .background(Surface)
+            .border(1.dp, Outline, RoundedCornerShape(20.dp))
             .padding(12.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -320,7 +339,8 @@ private fun PaletteStrip(selected: PaletteId, onSelect: (PaletteId) -> Unit) {
             Column(
                 modifier = Modifier
                     .clip(RoundedCornerShape(14.dp))
-                    .border(1.dp, if (active) Ember else Color(0xFF2A3144), RoundedCornerShape(14.dp))
+                    .border(1.dp, if (active) Accent else Outline, RoundedCornerShape(14.dp))
+                    .background(if (active) AccentSoft else Surface)
                     .clickable { onSelect(palette.id) }
                     .padding(8.dp)
                     .width(72.dp),
@@ -335,7 +355,7 @@ private fun PaletteStrip(selected: PaletteId, onSelect: (PaletteId) -> Unit) {
                         .background(Brush.horizontalGradient(colors)),
                 )
                 Spacer(Modifier.height(6.dp))
-                Text(palette.id.labelZh, color = Sand, fontSize = 12.sp)
+                Text(palette.id.labelZh, color = Ink, fontSize = 12.sp)
             }
         }
     }
@@ -347,15 +367,16 @@ private fun MeasureHintBar(count: Int, onRemoveSelected: () -> Unit, onClear: ()
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(InkHigh)
+            .background(Surface)
+            .border(1.dp, Outline, RoundedCornerShape(18.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("点按添加 · 拖动移动 · 长按删除  · 已有 ${count} 点", color = Sand, fontSize = 12.sp, modifier = Modifier.weight(1f))
+        Text("点按添加 · 拖动移动 · 长按删除  · 已有 ${count} 点", color = Ink, fontSize = 12.sp, modifier = Modifier.weight(1f))
         IconButton(onClick = onRemoveSelected) {
-            Icon(Icons.Outlined.Delete, contentDescription = "删除选中点", tint = Sand)
+            Icon(Icons.Outlined.Delete, contentDescription = "删除选中点", tint = Ink)
         }
-        TextButton(onClick = onClear) { Text("清空", color = Ember) }
+        TextButton(onClick = onClear) { Text("清空", color = Accent) }
     }
 }
 
@@ -365,76 +386,104 @@ private fun ConnectPanel(
     onRetry: () -> Unit,
     onRequestPermission: () -> Unit,
 ) {
+    val isError = state.status == DeviceStatus.Error ||
+        state.status == DeviceStatus.JniUnavailable ||
+        state.status == DeviceStatus.PermissionDenied
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 28.dp)
+            .padding(horizontal = 24.dp)
             .statusBarsPadding(),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
+        Column(
             modifier = Modifier
-                .size(92.dp)
-                .clip(CircleShape)
-                .background(InkHigh),
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .shadow(8.dp, RoundedCornerShape(28.dp), clip = false)
+                .clip(RoundedCornerShape(28.dp))
+                .background(Surface)
+                .border(
+                    1.dp,
+                    if (isError) Hot.copy(alpha = 0.35f) else Outline,
+                    RoundedCornerShape(28.dp),
+                )
+                .padding(horizontal = 24.dp, vertical = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Icon(Icons.Outlined.Usb, contentDescription = null, tint = Ember, modifier = Modifier.size(40.dp))
-        }
-        Spacer(Modifier.height(22.dp))
-        Text(
-            text = when (state.status) {
-                DeviceStatus.PermissionNeeded -> "需要 USB 权限"
-                DeviceStatus.PermissionDenied -> "USB 权限被拒绝"
-                DeviceStatus.JniUnavailable -> "无法加载模组驱动"
-                DeviceStatus.Error -> "连接失败"
-                DeviceStatus.Connecting -> "正在连接 Tiny1-B"
-                else -> "未检测到 Tiny1-B"
-            },
-            color = Sand,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(10.dp))
-        Text(
-            text = state.errorMessage ?: when (state.status) {
-                DeviceStatus.PermissionNeeded -> "系统将弹出授权窗口，请选择「允许」，否则无法取流。"
-                DeviceStatus.PermissionDenied -> "请重新插入模组，并在弹窗中允许访问该 USB 设备。"
-                DeviceStatus.JniUnavailable -> "Tiny1-B 原生库仅支持 ARM64 真机，模拟器无法预览实机画面。"
-                DeviceStatus.Connecting -> "正在打开 UVC 数据流…"
-                else -> "使用 USB OTG 连接 Infiray Tiny1-B 热像模组。VID 0BDA · PID 3901。"
-            },
-            color = Mist,
-            fontSize = 14.sp,
-            textAlign = TextAlign.Center,
-            lineHeight = 20.sp,
-        )
-        if (state.status == DeviceStatus.Connecting) {
-            Spacer(Modifier.height(18.dp))
-            LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth(0.5f).clip(RoundedCornerShape(8.dp)),
-                color = Ember,
-                trackColor = InkHigh,
-            )
-        }
-        Spacer(Modifier.height(28.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (state.status == DeviceStatus.PermissionNeeded || state.status == DeviceStatus.PermissionDenied) {
-                Button(
-                    onClick = onRequestPermission,
-                    colors = ButtonDefaults.buttonColors(containerColor = Ember, contentColor = Ink),
-                    shape = RoundedCornerShape(16.dp),
-                ) { Text("授权 USB") }
+            Box(
+                modifier = Modifier
+                    .size(88.dp)
+                    .clip(CircleShape)
+                    .background(if (isError) Hot.copy(alpha = 0.08f) else AccentSoft),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.Usb,
+                    contentDescription = null,
+                    tint = if (isError) Hot else Accent,
+                    modifier = Modifier.size(40.dp),
+                )
             }
-            Button(
-                onClick = onRetry,
-                colors = ButtonDefaults.buttonColors(containerColor = InkHigh, contentColor = Sand),
-                shape = RoundedCornerShape(16.dp),
-            ) { Text("重新扫描") }
+            Spacer(Modifier.height(20.dp))
+            Text(
+                text = when (state.status) {
+                    DeviceStatus.PermissionNeeded -> "需要 USB 权限"
+                    DeviceStatus.PermissionDenied -> "USB 权限被拒绝"
+                    DeviceStatus.JniUnavailable -> "无法加载模组驱动"
+                    DeviceStatus.Error -> "连接失败"
+                    DeviceStatus.Connecting -> "正在连接 Tiny1-B"
+                    else -> "未检测到 Tiny1-B"
+                },
+                color = Ink,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = state.errorMessage ?: when (state.status) {
+                    DeviceStatus.PermissionNeeded -> "系统将弹出授权窗口，请选择「允许」，否则无法取流。"
+                    DeviceStatus.PermissionDenied -> "请重新插入模组，并在弹窗中允许访问该 USB 设备。"
+                    DeviceStatus.JniUnavailable -> "Tiny1-B 原生库仅支持 ARM64 真机，模拟器无法预览实机画面。"
+                    DeviceStatus.Connecting -> "正在打开 UVC 数据流…"
+                    else -> "使用 USB OTG 连接 Infiray Tiny1-B 热像模组。VID 0BDA · PID 3901。"
+                },
+                color = Muted,
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center,
+                lineHeight = 20.sp,
+            )
+            if (state.status == DeviceStatus.Connecting) {
+                Spacer(Modifier.height(18.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(0.6f).clip(RoundedCornerShape(8.dp)),
+                    color = Accent,
+                    trackColor = SurfaceMuted,
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (state.status == DeviceStatus.PermissionNeeded || state.status == DeviceStatus.PermissionDenied) {
+                    Button(
+                        onClick = onRequestPermission,
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
+                        shape = RoundedCornerShape(16.dp),
+                    ) { Text("授权 USB") }
+                }
+                Button(
+                    onClick = onRetry,
+                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceMuted, contentColor = Ink),
+                    shape = RoundedCornerShape(16.dp),
+                ) { Text("重新扫描") }
+            }
         }
-        Spacer(Modifier.height(36.dp))
-        Text("也可在设置中打开「样例画面」预览色板与测温，无需模组。", color = Mist.copy(alpha = 0.8f), fontSize = 12.sp, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(20.dp))
+        Text(
+            "也可在设置中打开「样例画面」预览色板与测温，无需模组。",
+            color = Muted,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center,
+        )
     }
 }

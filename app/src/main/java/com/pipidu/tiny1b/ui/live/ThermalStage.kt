@@ -33,7 +33,7 @@ import com.pipidu.tiny1b.core.PointKind
 import com.pipidu.tiny1b.ui.formatTemp
 import com.pipidu.tiny1b.ui.theme.Cold
 import com.pipidu.tiny1b.ui.theme.Hot
-import com.pipidu.tiny1b.ui.theme.Sand
+import com.pipidu.tiny1b.ui.theme.Paper
 import kotlin.math.min
 
 @Composable
@@ -51,7 +51,7 @@ fun ThermalStage(
     val measurer = rememberTextMeasurer()
     var draggingId by remember { mutableStateOf<Long?>(null) }
 
-    BoxWithConstraints(modifier = modifier.background(Color(0xFF05060A))) {
+    BoxWithConstraints(modifier = modifier.background(Paper)) {
         val viewW = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val viewH = constraints.maxHeight.toFloat().coerceAtLeast(1f)
         val imgW = bitmap?.width?.toFloat() ?: 192f
@@ -102,7 +102,7 @@ fun ThermalStage(
                 val color = when (point.kind) {
                     PointKind.HOT -> Hot
                     PointKind.COLD -> Cold
-                    PointKind.CENTER -> Color(0xFFF4F1EA)
+                    PointKind.CENTER -> Color(0xFFF8FAFC)
                     PointKind.USER -> if (point.selected) Color(0xFFFFD36A) else Color(0xFFE8D5B5)
                 }
                 val arm = 14f
@@ -121,7 +121,7 @@ fun ThermalStage(
                 val layout = measurer.measure(
                     label,
                     style = TextStyle(
-                        color = Sand,
+                        color = Color.White,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                     ),

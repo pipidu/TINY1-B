@@ -11,7 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pipidu.tiny1b.ui.live.LiveViewScreen
 import com.pipidu.tiny1b.ui.settings.SettingsScreen
-import com.pipidu.tiny1b.ui.theme.Ink
+import com.pipidu.tiny1b.ui.theme.Paper
 
 @Composable
 fun Tiny1BRoot(viewModel: ThermalViewModel) {
@@ -19,7 +19,7 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
     val updateStatus by viewModel.updateStatus.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Ink) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Paper) {
         if (showSettings) {
             SettingsScreen(
                 state = state,

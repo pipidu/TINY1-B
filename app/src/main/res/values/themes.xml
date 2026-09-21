@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Tiny1B" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.Tiny1B" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">#07080D</item>
-        <item name="android:windowBackground">#07080D</item>
+        <item name="android:navigationBarColor">#F4F6FA</item>
+        <item name="android:windowBackground">#F4F6FA</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowFullscreen">false</item>
+        <item name="android:navigationBarDividerColor">#D0D7E2</item>
     </style>
 </resources>
