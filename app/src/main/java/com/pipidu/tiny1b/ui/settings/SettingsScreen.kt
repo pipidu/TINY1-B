@@ -30,6 +30,10 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -150,8 +154,8 @@ fun SettingsScreen(
                 Slider(
                     value = state.shutterMaxSeconds.toFloat(),
                     onValueChange = { onShutterMax(it.toInt()) },
-                    valueRange = 5f..60f,
-                    steps = 10,
+                    valueRange = 5f..120f,
+                    steps = 22,
                     colors = SliderDefaults.colors(
                         thumbColor = Accent,
                         activeTrackColor = Accent,
@@ -195,11 +199,17 @@ fun SettingsScreen(
                         if (status.release.body.isNotBlank()) {
                             Text(status.release.body.take(240), color = Muted, fontSize = 12.sp)
                         }
+                        var downloadStarted by remember(status.release.version) { mutableStateOf(false) }
                         Button(
-                            onClick = onDownloadUpdate,
+                            onClick = {
+                                if (downloadStarted) return@Button
+                                downloadStarted = true
+                                onDownloadUpdate()
+                            },
+                            enabled = !downloadStarted,
                             colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
                             shape = RoundedCornerShape(14.dp),
-                        ) { Text("下载并安装") }
+                        ) { Text(if (downloadStarted) "正在开始下载…" else "下载并安装") }
                     }
                     is UpdateStatus.Downloading -> {
                         Text("正在下载  ${(status.progress * 100).toInt()}%", color = Ink, fontSize = 13.sp)

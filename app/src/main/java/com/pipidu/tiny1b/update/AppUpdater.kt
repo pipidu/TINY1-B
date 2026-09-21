@@ -12,6 +12,7 @@ import com.pipidu.tiny1b.BuildConfig
 import com.pipidu.tiny1b.core.AppVersion
 import com.pipidu.tiny1b.core.GithubRelease
 import com.pipidu.tiny1b.core.GithubReleaseParser
+import com.pipidu.tiny1b.core.OneShotGate
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -40,6 +41,7 @@ class AppUpdater(context: Context) {
     val currentVersion: String = BuildConfig.VERSION_NAME.substringBefore("-")
     val currentVersionCode: Int = BuildConfig.VERSION_CODE
     private val userAgent = "TINY1-B/$currentVersion (+https://github.com/$REPO)"
+    private val downloadGate = OneShotGate()
 
     suspend fun check() {
         _status.value = UpdateStatus.Checking
@@ -59,47 +61,53 @@ class AppUpdater(context: Context) {
     }
 
     suspend fun download() {
-        val release = when (val current = _status.value) {
-            is UpdateStatus.Available -> current.release
-            is UpdateStatus.NeedsPermission -> current.release
-            is UpdateStatus.Ready -> current.release
-            is UpdateStatus.Downloading -> return
-            else -> {
-                check()
-                when (val after = _status.value) {
-                    is UpdateStatus.Available -> after.release
-                    is UpdateStatus.UpToDate -> return
-                    is UpdateStatus.Error -> return
-                    else -> {
-                        _status.value = UpdateStatus.Error("没有可下载的新版本")
-                        return
+        if (!downloadGate.tryEnter()) return
+        try {
+            val release = when (val current = _status.value) {
+                is UpdateStatus.Available -> current.release
+                is UpdateStatus.NeedsPermission -> current.release
+                is UpdateStatus.Ready -> current.release
+                is UpdateStatus.Downloading -> return
+                else -> {
+                    check()
+                    when (val after = _status.value) {
+                        is UpdateStatus.Available -> after.release
+                        is UpdateStatus.UpToDate -> return
+                        is UpdateStatus.Error -> return
+                        else -> {
+                            _status.value = UpdateStatus.Error("没有可下载的新版本")
+                            return
+                        }
                     }
                 }
             }
-        }
-        try {
-            val file = withContext(Dispatchers.IO) {
-                val dir = File(appContext.cacheDir, "updates").apply { mkdirs() }
-                val dest = File(dir, "TINY1-B-${release.version}.apk")
-                if (dest.exists() && dest.length() > 64 &&
-                    (release.sizeBytes <= 0L || dest.length() == release.sizeBytes)
-                ) {
-                    return@withContext dest
+            _status.value = UpdateStatus.Downloading(release, 0f)
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    val dir = File(appContext.cacheDir, "updates").apply { mkdirs() }
+                    val dest = File(dir, "TINY1-B-${release.version}.apk")
+                    if (dest.exists() && dest.length() > 64 &&
+                        (release.sizeBytes <= 0L || dest.length() == release.sizeBytes)
+                    ) {
+                        return@withContext dest
+                    }
+                    httpDownload(release.apkUrl, dest) { read, total ->
+                        val p = if (total > 0) (read.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+                        _status.value = UpdateStatus.Downloading(release, p)
+                    }
+                    dest
                 }
-                httpDownload(release.apkUrl, dest) { read, total ->
-                    val p = if (total > 0) (read.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
-                    _status.value = UpdateStatus.Downloading(release, p)
+                if (canInstall()) {
+                    _status.value = UpdateStatus.Ready(release, file)
+                } else {
+                    _status.value = UpdateStatus.NeedsPermission(release, file)
                 }
-                dest
+            } catch (error: Throwable) {
+                Log.e(TAG, "download", error)
+                _status.value = UpdateStatus.Error(error.message ?: "下载失败")
             }
-            if (canInstall()) {
-                _status.value = UpdateStatus.Ready(release, file)
-            } else {
-                _status.value = UpdateStatus.NeedsPermission(release, file)
-            }
-        } catch (error: Throwable) {
-            Log.e(TAG, "download", error)
-            _status.value = UpdateStatus.Error(error.message ?: "下载失败")
+        } finally {
+            downloadGate.exit()
         }
     }
 

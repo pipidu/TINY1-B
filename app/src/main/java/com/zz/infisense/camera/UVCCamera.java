@@ -94,6 +94,34 @@ public class UVCCamera {
         if (DEBUG) Log.v(TAG, "close:finished");
     }
 
+    /**
+     * USB already gone. Skip nativeStopPreview / nativeRelease / nativeDestroy —
+     * those SIGSEGV after unplug and flash-close the process. Drop the Java
+     * frame callback, close the UsbDeviceConnection, and leak the native
+     * camera object until process death. Caller must construct a new
+     * {@link UVCCamera} before opening again.
+     */
+    public synchronized void abandon() {
+        try {
+            if (mNativePtr != 0) {
+                nativeSetFrameCallback(mNativePtr, null);
+            }
+        } catch (Throwable ignored) {
+            Log.w(TAG, "abandon: nativeSetFrameCallback", ignored);
+        }
+        mNativePtr = 0;
+        openStatus = false;
+        if (mCtrlBlock != null) {
+            try {
+                mCtrlBlock.close();
+            } catch (Throwable ignored) {
+                Log.w(TAG, "abandon: close", ignored);
+            }
+            mCtrlBlock = null;
+        }
+        if (DEBUG) Log.v(TAG, "abandon:finished");
+    }
+
     public UsbDevice getDevice() {
         return mCtrlBlock != null ? mCtrlBlock.getDevice() : null;
     }

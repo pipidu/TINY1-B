@@ -14,6 +14,8 @@ import android.os.Looper
 import android.os.Message
 import android.os.SystemClock
 import android.util.Log
+import com.pipidu.tiny1b.capture.CaptureStore
+import com.pipidu.tiny1b.capture.ThermalRecorder
 import com.pipidu.tiny1b.core.DisplayRotation
 import com.pipidu.tiny1b.core.FrameParser
 import com.pipidu.tiny1b.core.IsrScale
@@ -71,6 +73,8 @@ data class EngineState(
     val colorBarMin: Float = 0f,
     val colorBarMax: Float = 40f,
     val userPointCount: Int = 0,
+    val recording: Boolean = false,
+    val captureHint: String? = null,
 )
 
 /**
@@ -95,6 +99,8 @@ class ThermalEngine(
     private var sampleThread: Thread? = null
     @Volatile private var previewing = false
     @Volatile private var nativeLoadFailed = false
+    private val recorder = ThermalRecorder(appContext)
+    @Volatile private var recordingStartedAt = 0L
     private var frames = 0
     private var fpsWindowStart = 0L
     private var displayedFps = 0
@@ -123,7 +129,7 @@ class ThermalEngine(
                     }
                 }
                 UsbControlBlock.USB_ATTACH -> tryOpenCamera("attach")
-                UsbControlBlock.USB_DETACH -> onUsbDetach()
+                UsbControlBlock.USB_DETACH -> onUsbDetach(msg.obj as? UsbDevice)
             }
         }
     }
@@ -139,7 +145,10 @@ class ThermalEngine(
                     usbHandler.obtainMessage(UsbControlBlock.USB_ATTACH).sendToTarget()
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    usbHandler.obtainMessage(UsbControlBlock.USB_DETACH).sendToTarget()
+                    val device = extraUsbDevice(intent)
+                    val message = usbHandler.obtainMessage(UsbControlBlock.USB_DETACH)
+                    message.obj = device
+                    usbHandler.sendMessage(message)
                 }
             }
         }
@@ -159,7 +168,10 @@ class ThermalEngine(
     fun stop() {
         running.set(false)
         usbHandler.removeCallbacks(attachRetryRunnable)
+        usbHandler.removeCallbacks(recTick)
+        usbHandler.removeCallbacks(clearHintRunnable)
         unregisterUsbReceiver()
+        runCatching { stopRecordingInternal(null) }
         synchronized(cameraLock) { destroyCameraLocked() }
         stopSample()
         synchronized(frameLock) { frameLock.notifyAll() }
@@ -296,6 +308,7 @@ class ThermalEngine(
     }
 
     fun addOrSelectPoint(nx: Float, ny: Float) {
+        if (!_state.value.measureEdit) return
         val existing = measurement.nearestUser(nx, ny)
         if (existing != null) {
             measurement.select(existing)
@@ -306,17 +319,20 @@ class ThermalEngine(
     }
 
     fun moveSelected(nx: Float, ny: Float) {
+        if (!_state.value.measureEdit) return
         val selected = _state.value.measurement.points.firstOrNull { it.selected }?.id ?: return
         measurement.move(selected, nx, ny)
         refreshMeasurementOnly()
     }
 
     fun moveUser(id: Long, nx: Float, ny: Float) {
+        if (!_state.value.measureEdit) return
         measurement.move(id, nx, ny)
         refreshMeasurementOnly()
     }
 
     fun removeNearest(nx: Float, ny: Float) {
+        if (!_state.value.measureEdit) return
         val id = measurement.nearestUser(nx, ny, 0.07f) ?: return
         measurement.remove(id)
         refreshMeasurementOnly()
@@ -334,9 +350,63 @@ class ThermalEngine(
     }
 
     fun beginDrag(nx: Float, ny: Float): Long? {
+        if (!_state.value.measureEdit) return null
         val id = measurement.nearestUser(nx, ny, 0.06f)
         if (id != null) measurement.select(id)
         return id
+    }
+
+    fun capturePhoto() {
+        val src = _state.value.bitmap
+        if (src == null || src.isRecycled) {
+            flashCaptureHint("没有可保存的画面")
+            return
+        }
+        val copy = src.copy(Bitmap.Config.ARGB_8888, false) ?: run {
+            flashCaptureHint("无法复制当前画面")
+            return
+        }
+        thread(name = "tiny1b-photo", isDaemon = true) {
+            val message = runCatching {
+                CaptureStore.saveJpeg(appContext, copy)
+                "照片已保存到相册"
+            }.getOrElse { error ->
+                "保存照片失败：${error.message ?: error.javaClass.simpleName}"
+            }
+            runCatching { copy.recycle() }
+            usbHandler.post { flashCaptureHint(message) }
+        }
+    }
+
+    fun toggleRecord() {
+        if (recorder.recording) {
+            stopRecordingInternal(null)
+            return
+        }
+        val bmp = _state.value.bitmap
+        if (bmp == null || bmp.isRecycled) {
+            flashCaptureHint("没有可录像的画面")
+            return
+        }
+        val started = runCatching { recorder.start(bmp.width, bmp.height) }
+        if (started.isFailure) {
+            val error = started.exceptionOrNull()
+            flashCaptureHint("无法开始录像：${error?.message ?: error?.javaClass?.simpleName}")
+            return
+        }
+        recordingStartedAt = SystemClock.elapsedRealtime()
+        _state.update { it.copy(recording = true, captureHint = "录像中 00:00") }
+        usbHandler.removeCallbacks(clearHintRunnable)
+        usbHandler.removeCallbacks(recTick)
+        usbHandler.post(recTick)
+    }
+
+    fun flashCaptureHint(message: String) {
+        _state.update { it.copy(captureHint = message) }
+        usbHandler.removeCallbacks(clearHintRunnable)
+        if (!recorder.recording) {
+            usbHandler.postDelayed(clearHintRunnable, HINT_MS)
+        }
     }
 
     private fun refreshMeasurementOnly() {
@@ -456,18 +526,27 @@ class ThermalEngine(
         scheduleRetry()
     }
 
-    private fun onUsbDetach() {
-        synchronized(cameraLock) {
-            previewing = false
-            destroyCameraLocked()
+    private fun onUsbDetach(device: UsbDevice?) {
+        if (device != null &&
+            (device.vendorId != Tiny1BFormat.VENDOR_ID || device.productId != Tiny1BFormat.PRODUCT_ID)
+        ) {
+            return
         }
+        latestFrame.set(null)
+        previewing = false
+        runCatching { stopRecordingInternal("模组已断开，录像已停止") }
         _state.update {
             it.copy(
                 status = DeviceStatus.Searching,
                 statusDetail = "模组已断开",
                 bitmap = null,
                 errorMessage = null,
+                recording = false,
             )
+        }
+        synchronized(cameraLock) {
+            previewing = false
+            abandonCameraLocked()
         }
         if (settings.samplePreview) startSample()
         usbHandler.removeCallbacks(attachRetryRunnable)
@@ -507,6 +586,14 @@ class ThermalEngine(
         runCatching { cam.destroy() }
     }
 
+    private fun abandonCameraLocked() {
+        previewing = false
+        val cam = camera
+        camera = null
+        if (cam == null) return
+        runCatching { cam.abandon() }
+    }
+
     private fun stopPreviewLocked() {
         previewing = false
         val cam = camera ?: return
@@ -524,6 +611,15 @@ class ThermalEngine(
         usbManager.deviceList.values.firstOrNull {
             it.vendorId == Tiny1BFormat.VENDOR_ID && it.productId == Tiny1BFormat.PRODUCT_ID
         }
+
+    private fun extraUsbDevice(intent: Intent): UsbDevice? {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        }
+    }
 
     private fun registerUsbReceiver() {
         val act = activity ?: return
@@ -648,6 +744,7 @@ class ThermalEngine(
     }
 
     private fun processFrame(frame: ByteArray) {
+        if (!previewing && !sampleRunning.get()) return
         var planes = runCatching { FrameParser.parseUvcFrame(frame) }.getOrNull() ?: return
         planes = FrameParser.applyOrientation(planes, settings.rotation, settings.mirror)
         lastPlanes = planes
@@ -661,6 +758,12 @@ class ThermalEngine(
         val snap = measurement.snapshot(planes)
         val bmp = Bitmap.createBitmap(rendered.width, rendered.height, Bitmap.Config.ARGB_8888)
         bmp.setPixels(rendered.argb, 0, rendered.width, 0, 0, rendered.width, rendered.height)
+        if (recorder.recording) {
+            runCatching { recorder.offer(bmp) }
+        }
+        if (!previewing && !sampleRunning.get()) return
+        val status = _state.value.status
+        if (status != DeviceStatus.Live && status != DeviceStatus.Sample) return
         frames++
         val now = SystemClock.elapsedRealtime()
         if (fpsWindowStart == 0L) fpsWindowStart = now
@@ -698,8 +801,46 @@ class ThermalEngine(
         shutterMaxSeconds = settings.shutterMaxSeconds,
     )
 
+    private fun stopRecordingInternal(disconnectMessage: String?) {
+        usbHandler.removeCallbacks(recTick)
+        recordingStartedAt = 0L
+        if (!recorder.recording) {
+            _state.update { it.copy(recording = false) }
+            if (disconnectMessage != null) flashCaptureHint(disconnectMessage)
+            return
+        }
+        val result = runCatching { recorder.stop() }
+        _state.update { it.copy(recording = false) }
+        val message = when {
+            result.isSuccess -> disconnectMessage ?: "录像已保存到相册"
+            else -> "保存录像失败：${result.exceptionOrNull()?.message ?: result.exceptionOrNull()?.javaClass?.simpleName}"
+        }
+        flashCaptureHint(message)
+    }
+
+    private val recTick = object : Runnable {
+        override fun run() {
+            if (!recorder.recording) return
+            val sec = ((SystemClock.elapsedRealtime() - recordingStartedAt) / 1000L).toInt().coerceAtLeast(0)
+            _state.update { it.copy(recording = true, captureHint = "录像中 ${formatMmSs(sec)}") }
+            usbHandler.postDelayed(this, 1000)
+        }
+    }
+
+    private val clearHintRunnable = Runnable {
+        if (recorder.recording) return@Runnable
+        _state.update { it.copy(captureHint = null) }
+    }
+
     companion object {
         private const val TAG = "ThermalEngine"
         private const val RETRY_MS = 5000L
+        private const val HINT_MS = 3500L
+
+        private fun formatMmSs(totalSec: Int): String {
+            val m = totalSec / 60
+            val s = totalSec % 60
+            return "%02d:%02d".format(m, s)
+        }
     }
 }

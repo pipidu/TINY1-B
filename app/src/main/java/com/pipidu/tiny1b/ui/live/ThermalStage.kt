@@ -70,31 +70,38 @@ fun ThermalStage(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(measureEdit, fit) {
-                    detectTapGestures(
-                        onLongPress = { offset ->
-                            toNorm(offset, fit)?.let { (nx, ny) -> onRemoveNearest(nx, ny) }
-                        },
-                        onTap = { offset ->
-                            toNorm(offset, fit)?.let { (nx, ny) -> onAddOrSelect(nx, ny) }
-                        },
-                    )
-                }
-                .pointerInput(measureEdit, fit) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            val n = toNorm(offset, fit) ?: return@detectDragGestures
-                            draggingId = onBeginDrag(n.first, n.second)
-                        },
-                        onDragEnd = { draggingId = null },
-                        onDragCancel = { draggingId = null },
-                        onDrag = { change, _ ->
-                            val id = draggingId ?: return@detectDragGestures
-                            val n = toNorm(change.position, fit) ?: return@detectDragGestures
-                            onMoveUser(id, n.first, n.second)
-                        },
-                    )
-                },
+                .then(
+                    if (measureEdit) {
+                        Modifier
+                            .pointerInput(fit) {
+                                detectTapGestures(
+                                    onLongPress = { offset ->
+                                        toNorm(offset, fit)?.let { (nx, ny) -> onRemoveNearest(nx, ny) }
+                                    },
+                                    onTap = { offset ->
+                                        toNorm(offset, fit)?.let { (nx, ny) -> onAddOrSelect(nx, ny) }
+                                    },
+                                )
+                            }
+                            .pointerInput(fit) {
+                                detectDragGestures(
+                                    onDragStart = { offset ->
+                                        val n = toNorm(offset, fit) ?: return@detectDragGestures
+                                        draggingId = onBeginDrag(n.first, n.second)
+                                    },
+                                    onDragEnd = { draggingId = null },
+                                    onDragCancel = { draggingId = null },
+                                    onDrag = { change, _ ->
+                                        val id = draggingId ?: return@detectDragGestures
+                                        val n = toNorm(change.position, fit) ?: return@detectDragGestures
+                                        onMoveUser(id, n.first, n.second)
+                                    },
+                                )
+                            }
+                    } else {
+                        Modifier
+                    },
+                ),
         ) {
             points.forEach { point ->
                 val x = fit.left + point.nx * fit.width

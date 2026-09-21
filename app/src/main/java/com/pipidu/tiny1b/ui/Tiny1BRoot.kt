@@ -58,6 +58,9 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
                 onRemoveNearest = viewModel::removeNearest,
                 onRemoveSelected = viewModel::removeSelected,
                 onClearPoints = viewModel::clearUserPoints,
+                onCapturePhoto = viewModel::capturePhoto,
+                onToggleRecord = viewModel::toggleRecord,
+                onStorageDenied = viewModel::onStorageDenied,
             )
         }
     }

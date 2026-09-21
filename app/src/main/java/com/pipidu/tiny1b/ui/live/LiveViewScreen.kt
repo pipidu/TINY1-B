@@ -1,5 +1,9 @@
 package com.pipidu.tiny1b.ui.live
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,14 +27,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Camera
+import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.MyLocation
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.ScreenRotation
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.ShutterSpeed
 import androidx.compose.material.icons.outlined.Usb
-import androidx.compose.material.icons.outlined.AutoFixHigh
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -50,10 +56,12 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.core.Palettes
@@ -90,48 +98,64 @@ fun LiveViewScreen(
     onRemoveNearest: (Float, Float) -> Unit,
     onRemoveSelected: () -> Unit,
     onClearPoints: () -> Unit,
+    onCapturePhoto: () -> Unit,
+    onToggleRecord: () -> Unit,
+    onStorageDenied: () -> Unit,
 ) {
     var paletteOpen by remember { mutableStateOf(false) }
     val live = isLiveLike(state.status)
+    val withStoragePermission = rememberStorageAction(onDenied = onStorageDenied)
 
-    Box(modifier = Modifier.fillMaxSize().background(Paper)) {
-        if (live && state.bitmap != null) {
-            ThermalStage(
-                bitmap = state.bitmap,
-                points = state.measurement.points,
-                fahrenheit = state.useFahrenheit,
-                measureEdit = state.measureEdit,
-                onAddOrSelect = onAddOrSelect,
-                onBeginDrag = onBeginDrag,
-                onMoveUser = onMoveUser,
-                onRemoveNearest = onRemoveNearest,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            ConnectPanel(
-                state = state,
-                onRetry = onRetry,
-            )
-        }
-
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Paper)
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+    ) {
         TopChrome(
             state = state,
             showLegend = live && state.bitmap != null,
             onOpenSettings = onOpenSettings,
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         )
 
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        ) {
+            if (live && state.bitmap != null) {
+                ThermalStage(
+                    bitmap = state.bitmap,
+                    points = state.measurement.points,
+                    fahrenheit = state.useFahrenheit,
+                    measureEdit = state.measureEdit,
+                    onAddOrSelect = onAddOrSelect,
+                    onBeginDrag = onBeginDrag,
+                    onMoveUser = onMoveUser,
+                    onRemoveNearest = onRemoveNearest,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                ConnectPanel(
+                    state = state,
+                    onRetry = onRetry,
+                )
+            }
+        }
+
         Column(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            val hint = state.captureHint
+            if (!hint.isNullOrBlank()) {
+                CaptureHintBar(text = hint, recording = state.recording)
+            }
             if (state.measureEdit && live) {
                 MeasureHintBar(
                     count = state.userPointCount,
@@ -148,8 +172,11 @@ fun LiveViewScreen(
             BottomDock(
                 live = live,
                 measureEdit = state.measureEdit,
+                recording = state.recording,
                 isr = state.isr,
                 rotationLabel = state.rotation.labelZh,
+                onPhoto = { withStoragePermission(onCapturePhoto) },
+                onRecord = { withStoragePermission(onToggleRecord) },
                 onShutter = onShutter,
                 onPalette = { paletteOpen = !paletteOpen },
                 onMeasure = { onMeasureEdit(!state.measureEdit) },
@@ -163,6 +190,32 @@ fun LiveViewScreen(
                 },
                 onRotate = onRotate,
             )
+        }
+    }
+}
+
+@Composable
+private fun rememberStorageAction(onDenied: () -> Unit): (() -> Unit) -> Unit {
+    val context = LocalContext.current
+    var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val action = pending
+        pending = null
+        if (granted) action?.invoke() else onDenied()
+    }
+    return { action ->
+        if (Build.VERSION.SDK_INT >= 29) {
+            action()
+        } else if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            action()
+        } else {
+            pending = action
+            launcher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }
 }
@@ -195,6 +248,9 @@ private fun TopChrome(
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (state.recording) {
+                    RecordingChip()
+                }
                 StatusChip(state.status)
                 IconButton(onClick = onOpenSettings) {
                     Icon(Icons.Outlined.Settings, contentDescription = "设置", tint = Ink)
@@ -252,18 +308,36 @@ private fun StatusChip(status: DeviceStatus) {
 }
 
 @Composable
+private fun RecordingChip() {
+    Row(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(Hot.copy(alpha = 0.12f))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(Modifier.size(7.dp).clip(CircleShape).background(Hot))
+        Text("REC", color = Hot, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
 private fun BottomDock(
     live: Boolean,
     measureEdit: Boolean,
+    recording: Boolean,
     isr: IsrScale,
     rotationLabel: String,
+    onPhoto: () -> Unit,
+    onRecord: () -> Unit,
     onShutter: () -> Unit,
     onPalette: () -> Unit,
     onMeasure: () -> Unit,
     onIsr: () -> Unit,
     onRotate: () -> Unit,
 ) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .shadow(6.dp, RoundedCornerShape(28.dp), clip = false)
@@ -271,14 +345,33 @@ private fun BottomDock(
             .background(Surface)
             .border(1.dp, Outline, RoundedCornerShape(28.dp))
             .padding(horizontal = 10.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        DockItem("快门", Icons.Outlined.Camera, enabled = live, onClick = onShutter)
-        DockItem("色板", Icons.Outlined.Palette, onClick = onPalette)
-        DockItem("测温", Icons.Outlined.MyLocation, active = measureEdit, onClick = onMeasure)
-        DockItem(isr.labelZh, Icons.Outlined.AutoFixHigh, active = isr != IsrScale.OFF, onClick = onIsr)
-        DockItem(rotationLabel, Icons.Outlined.ScreenRotation, active = rotationLabel != "0°", onClick = onRotate)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DockItem("拍照", Icons.Outlined.PhotoCamera, enabled = live, onClick = onPhoto)
+            DockItem(
+                if (recording) "停止" else "录像",
+                Icons.Outlined.Videocam,
+                active = recording,
+                enabled = live,
+                onClick = onRecord,
+            )
+            DockItem("快门", Icons.Outlined.ShutterSpeed, enabled = live, onClick = onShutter)
+            DockItem("测温", Icons.Outlined.MyLocation, active = measureEdit, onClick = onMeasure)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DockItem("色板", Icons.Outlined.Palette, onClick = onPalette)
+            DockItem(isr.labelZh, Icons.Outlined.AutoFixHigh, active = isr != IsrScale.OFF, onClick = onIsr)
+            DockItem(rotationLabel, Icons.Outlined.ScreenRotation, active = rotationLabel != "0°", onClick = onRotate)
+        }
     }
 }
 
@@ -349,6 +442,22 @@ private fun PaletteStrip(selected: PaletteId, onSelect: (PaletteId) -> Unit) {
 }
 
 @Composable
+private fun CaptureHintBar(text: String, recording: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (recording) Hot.copy(alpha = 0.10f) else Surface)
+            .border(1.dp, if (recording) Hot.copy(alpha = 0.35f) else Outline, RoundedCornerShape(18.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Text(text, color = if (recording) Hot else Ink, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
 private fun MeasureHintBar(count: Int, onRemoveSelected: () -> Unit, onClear: () -> Unit) {
     Row(
         modifier = Modifier
@@ -378,8 +487,7 @@ private fun ConnectPanel(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp)
-            .statusBarsPadding(),
+            .padding(horizontal = 24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

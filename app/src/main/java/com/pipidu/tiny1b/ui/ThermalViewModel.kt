@@ -11,6 +11,7 @@ import com.pipidu.tiny1b.device.EngineState
 import com.pipidu.tiny1b.device.ThermalEngine
 import com.pipidu.tiny1b.update.AppUpdater
 import com.pipidu.tiny1b.update.UpdateStatus
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -28,6 +29,7 @@ class ThermalViewModel(
     val updateStatus: StateFlow<UpdateStatus> = updater.status
     val currentVersion: String = updater.currentVersion
     val currentVersionCode: Int = updater.currentVersionCode
+    private var downloadJob: Job? = null
 
     fun start() = engine.start()
     fun stop() = engine.stop()
@@ -59,9 +61,15 @@ class ThermalViewModel(
     fun removeNearest(nx: Float, ny: Float) = engine.removeNearest(nx, ny)
     fun removeSelected() = engine.removeSelected()
     fun clearUserPoints() = engine.clearUserPoints()
+    fun capturePhoto() = engine.capturePhoto()
+    fun toggleRecord() = engine.toggleRecord()
+    fun onStorageDenied() = engine.flashCaptureHint("需要存储权限才能保存照片和录像")
 
     fun checkUpdate() = viewModelScope.launch { updater.check() }
-    fun downloadUpdate() = viewModelScope.launch { updater.download() }
+    fun downloadUpdate() {
+        if (downloadJob?.isActive == true) return
+        downloadJob = viewModelScope.launch { updater.download() }
+    }
     fun installPermissionIntent() = updater.installPermissionIntent()
     fun installIntent() = updater.installIntent()
     fun onHostResumed() {
