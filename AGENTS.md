@@ -107,14 +107,15 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.2** (`versionCode` **3**).
+- Current: **1.0.3** (`versionCode` **4**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
 - Tag the release as `1.0.x` (no `v` prefix). Attach `TINY1-B-1.0.x.apk`.
 - applicationId is always `com.pipidu.tiny1b` (no `.debug` suffix) so updates overwrite.
 - **1.0.1**: crash-survivable Tiny1-B USB connect + light UI as the primary look.
-- **1.0.2**: real USB permission dialog (no fake 被拒) + working in-app GitHub updater.
+- **1.0.2**: attempted USB-denied fix + in-app GitHub updater (permission dialog still broken on hardware).
+- **1.0.3**: USB grant path matches Infiray demo (`targetSdk 26`, implicit Activity PI).
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk
