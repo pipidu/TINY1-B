@@ -10,22 +10,34 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 - The product may keep **only** the Tiny1-B pieces required to build: arm64 JNI `.so` files (`libUVCCamera`, `libuvc`, `libusb100`, `libjpeg-turbo1500`) plus the JNI Java class names those libraries bind to.
 - JNI symbols are compiled as `com.zz.infisense.camera.UVCCamera` / `IFrameCallback`. Those two classes are SDK glue, not the demo UI.
 
-## Current status
+## Current architecture
 
-- JNI stack dropped under `app/src/main/jniLibs/arm64-v8a/` with rewritten `UVCCamera` / `IFrameCallback` holders.
-- App Gradle scaffold, imaging ISR, measurement UI still to land.
-- Device path (from private demo study, not shipped): UVC **VID `0x0BDA` / PID `0x3901`**, stream **256×384** YUYV, split into **256×192** image + **256×192** temperature, rotate 90° CCW for portrait. Temperature is `uint16` little-endian, **°C = raw/16 − 273.15**.
+```
+core/     Pure JVM: UVC frame split, temperature, palettes, software ISR, measurement
+app/      Android: USB host, UVC session, Compose UI (Chinese)
+```
+
+- `ThermalEngine` opens Tiny1-B, pulls YUYV frames, runs ISR, publishes `EngineState`.
+- `LiveViewScreen` is connect-or-live: empty/permission/error cards, thermal stage, palettes, measurement dock.
+- `SettingsScreen` covers ISR, min/max, center point, shutter interval, KB cal, sample preview.
 
 ## Tiny1-B integration
 
-1. USB host finds VID/PID `0x0BDA`/`0x3901`, requests permission, opens a file descriptor.
-2. `UVCCamera.connect` passes fd/bus/dev to `libUVCCamera`; preview size **256×384** YUYV.
-3. Each callback frame is split in half: image YUYV then temperature plane (see `core` `FrameParser` once added).
-4. ISP commands (shutter, KB cal, max shutter interval) use USB control transfers on the UVC control interface — product code, not demo UI.
+1. USB host matches **VID `0x0BDA` / PID `0x3901`** (`device_filter.xml` decimal 3034/14593).
+2. After permission, `UsbHostController` opens a connection; `UVCCamera.connect` passes fd/bus/dev into `libUVCCamera`.
+3. Preview size **256×384** YUYV. Each frame is split: **256×192** image + **256×192** Kelvin-16 temperature, then rotated 90° CCW to **192×256** portrait (`FrameParser`).
+4. Temperature: `°C = raw/16 − 273.15`.
+5. Control transfers (`Tiny1BCommands`): manual shutter `0x0345`, KB cal `0x0341`, shutter max get `0x038A` / set `0x03C4`.
 
-## ISR / measurement
+## ISR
 
-Not implemented in tree yet. Target: software 2×/4× fusion of temperature AGC + Y-detail, min/max markers, center + user points.
+`SuperResolution`: percentile-AGC on temperature, Catmull-Rom 2× (optional second pass for 4×), unsharp Y-detail fused into the temperature field, then palette LUT. **Measurement always samples the native 192×256 temperature grid**, not the upscaled pixels.
+
+## Measurement
+
+- Auto **max / min** markers on the live image.
+- Always-on **center** point (toggle in settings).
+- User points: tap add, drag move, long-press or dock delete, max 8.
 
 ## Layout
 
@@ -33,20 +45,30 @@ Not implemented in tree yet. Target: software 2×/4× fusion of temperature AGC 
 AGENTS.md
 README.md
 .gitignore
-app/src/main/jniLibs/arm64-v8a/*.so     Tiny1-B UVC JNI (required)
-app/src/main/java/com/zz/infisense/camera/   JNI class names required by .so
+settings.gradle.kts / build.gradle.kts / gradle/
+core/src/main/kotlin/com/pipidu/tiny1b/core/
+app/src/main/java/com/pipidu/tiny1b/          product
+app/src/main/java/com/zz/infisense/camera/    JNI names required by .so
+app/src/main/jniLibs/arm64-v8a/               Tiny1-B UVC JNI
 ```
 
 ## Build / run
 
-Not fully scaffolded. After Gradle lands:
-
 ```bash
+export ANDROID_HOME=$HOME/Android/Sdk   # or your SDK
+# JDK 21
 ./gradlew :core:test
 ./gradlew :app:assembleDebug
 ```
 
-Arm64 Android phone + USB-OTG + Tiny1-B. Emulators cannot load these `.so` files.
+Install `app/build/outputs/apk/debug/app-debug.apk` on an **arm64** phone with USB-OTG + Tiny1-B. Emulators cannot load the JNI `.so` files.
+
+Optional: 设置 → 样例画面, to exercise palettes/ISR/points without hardware.
+
+## Hardware-only gaps
+
+- Real Tiny1-B USB attach, permission, UVC stream, shutter click, and KB cal cannot be verified in this environment.
+- Only `arm64-v8a` vendor JNI is available.
 
 ## Process
 
