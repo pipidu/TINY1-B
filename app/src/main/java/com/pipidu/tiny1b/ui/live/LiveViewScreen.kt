@@ -445,7 +445,7 @@ private fun ConnectPanel(
                     DeviceStatus.RequestingPermission -> "请在系统弹窗中选择「允许」。"
                     DeviceStatus.PermissionNeeded -> "Tiny1-B 已连接时，请将应用保持在前台。系统会请求 USB 权限，请选择「允许」。"
                     DeviceStatus.PermissionDenied -> "请点「重新扫描」，并在系统弹窗中选择「允许」。"
-                    DeviceStatus.Connecting -> "正在打开 UVC 数据流…"
+                    DeviceStatus.Connecting -> "正在打开相机…"
                     else -> "使用 USB OTG 连接 Infiray Tiny1-B 热像模组。VID 0BDA · PID 3901。"
                 },
                 color = Muted,

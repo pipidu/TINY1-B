@@ -217,7 +217,7 @@ fun SettingsScreen(
             Section("关于") {
                 Text("TINY1-B 热成像  $currentVersion", color = Ink, fontSize = 14.sp)
                 Text("Infiray Tiny1-B · USB VID 0BDA / PID 3901 · 256×384 YUYV 叠温", color = Muted, fontSize = 12.sp)
-                Text("本应用为独立产品，不含厂商 demo 工程。", color = Muted, fontSize = 12.sp)
+                Text("USB 取流使用厂商 demo 的 libUVCCamera（Java 包 com.zz.infisense.camera）。应用 ID 仍是 com.pipidu.tiny1b。", color = Muted, fontSize = 12.sp)
             }
             Spacer(Modifier.height(24.dp))
         }

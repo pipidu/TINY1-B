@@ -1,2 +1,5 @@
-# Product rules after UVC rewrite (1.0.5). Keep empty;
-# minify is off. Do not re-add com.zz.infisense keep rules.
+# JNI wrappers for libUVCCamera. Minify is off; keep these if it is ever enabled.
+-keep class com.zz.infisense.camera.** { *; }
+-keepclassmembers class com.zz.infisense.camera.UVCCamera {
+    protected long mNativePtr;
+}

@@ -1,23 +1,36 @@
 package com.pipidu.tiny1b.device
 
+import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.Message
 import android.os.SystemClock
 import android.util.Log
 import com.pipidu.tiny1b.core.FrameParser
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.MeasurementModel
 import com.pipidu.tiny1b.core.MeasurementSnapshot
-import com.pipidu.tiny1b.core.PointKind
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.core.Palettes
+import com.pipidu.tiny1b.core.PointKind
 import com.pipidu.tiny1b.core.RenderedFrame
 import com.pipidu.tiny1b.core.SuperResolution
 import com.pipidu.tiny1b.core.SyntheticScene
 import com.pipidu.tiny1b.core.ThermalPlanes
-import com.pipidu.tiny1b.core.UsbPermissionSequence
+import com.pipidu.tiny1b.core.Tiny1BFormat
 import com.pipidu.tiny1b.data.AppSettings
+import com.zz.infisense.camera.IFrameCallback
+import com.zz.infisense.camera.UVCCamera
+import com.zz.infisense.camera.UsbControlBlock
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,271 +71,164 @@ data class EngineState(
     val userPointCount: Int = 0,
 )
 
+/**
+ * Tiny1-B live engine. USB open/preview is the vendor demo path
+ * ([UVCCamera] / [UsbControlBlock] / libUVCCamera), not the 1.0.5–1.0.9
+ * Kotlin UsbManager UVC stack.
+ */
 class ThermalEngine(
     context: android.content.Context,
     private val settings: AppSettings,
 ) {
-    val host = UsbHostController(context)
     val measurement = MeasurementModel()
 
-    private val capture = UvcCapture()
+    private val appContext = context.applicationContext
+    private val usbManager = appContext.getSystemService(UsbManager::class.java)
     private val running = AtomicBoolean(false)
-    private val connecting = AtomicBoolean(false)
     private val activityResumed = AtomicBoolean(false)
-    private val permissionRequestInFlight = AtomicBoolean(false)
-    private val pausedDuringPermissionRequest = AtomicBoolean(false)
-    private val permissionStep = AtomicInteger(0)
-    private val permissionSequenceExhausted = AtomicBoolean(false)
-    @Volatile private var attachHintDevice: android.hardware.usb.UsbDevice? = null
     private val latestFrame = AtomicReference<ByteArray?>()
     private val frameLock = Object()
-    private val connectLock = Any()
+    private val cameraLock = Any()
     private var worker: Thread? = null
     private var sampleThread: Thread? = null
     @Volatile private var previewing = false
+    @Volatile private var nativeLoadFailed = false
     private var frames = 0
     private var fpsWindowStart = 0L
     private var displayedFps = 0
+    private var activity: Activity? = null
+    private var camera: UVCCamera? = null
+    private var usbReceiverRegistered = false
 
     private val _state = MutableStateFlow(readSettings(EngineState()))
     val state: StateFlow<EngineState> = _state.asStateFlow()
 
+    private val frameCallback = IFrameCallback { frame ->
+        if (frame == null || frame.size < Tiny1BFormat.UVC_FRAME_BYTES) return@IFrameCallback
+        latestFrame.set(frame.copyOf(Tiny1BFormat.UVC_FRAME_BYTES))
+        synchronized(frameLock) { frameLock.notify() }
+    }
+
+    private val usbHandler = object : Handler(Looper.getMainLooper()) {
+        override fun handleMessage(msg: Message) {
+            when (msg.what) {
+                UsbControlBlock.USB_PERMISSION -> {
+                    if (msg.arg1 == UsbControlBlock.USB_PERMIT) {
+                        Log.i(TAG, "USB permission granted")
+                        tryOpenCamera("permission")
+                    } else {
+                        onPermissionDenied()
+                    }
+                }
+                UsbControlBlock.USB_ATTACH -> tryOpenCamera("attach")
+                UsbControlBlock.USB_DETACH -> onUsbDetach()
+            }
+        }
+    }
+
+    private val attachRetryRunnable = Runnable {
+        tryOpenCamera("retry")
+    }
+
+    private val usbStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                    usbHandler.obtainMessage(UsbControlBlock.USB_ATTACH).sendToTarget()
+                }
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                    usbHandler.obtainMessage(UsbControlBlock.USB_DETACH).sendToTarget()
+                }
+            }
+        }
+    }
+
     init {
         measurement.showCenter = settings.showCenter
         measurement.showMinMax = settings.showMinMax
-        host.onAttach = { connectIfPresent(allowPermissionRequest = true) }
-        host.onDetach = {
-            attachHintDevice = null
-            permissionRequestInFlight.set(false)
-            permissionStep.set(0)
-            permissionSequenceExhausted.set(false)
-            synchronized(connectLock) { disconnectLocked() }
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.Searching,
-                    statusDetail = "模组已断开",
-                    bitmap = null,
-                    errorMessage = null,
-                )
-            }
-            if (settings.samplePreview) startSample()
-        }
-        host.onPermissionResult = { granted, hasGrantExtra -> onUsbPermissionResult(granted, hasGrantExtra) }
     }
 
     fun start() {
-        if (running.getAndSet(true)) {
-            host.register()
-            return
-        }
-        host.register()
+        if (running.getAndSet(true)) return
         startWorker()
         if (settings.samplePreview) startSample()
     }
 
     fun stop() {
         running.set(false)
-        synchronized(connectLock) { disconnectLocked() }
+        usbHandler.removeCallbacks(attachRetryRunnable)
+        unregisterUsbReceiver()
+        synchronized(cameraLock) { destroyCameraLocked() }
         stopSample()
-        host.unregister()
         synchronized(frameLock) { frameLock.notifyAll() }
         worker?.join(500)
         worker = null
     }
 
     fun retryConnect() {
-        host.clearDenied()
-        permissionRequestInFlight.set(false)
-        permissionStep.set(0)
-        permissionSequenceExhausted.set(false)
-        connectIfPresent(allowPermissionRequest = true)
+        if (!running.get()) return
+        usbHandler.removeCallbacks(attachRetryRunnable)
+        usbHandler.post { tryOpenCamera("retry-button") }
     }
 
-    fun bindActivity(activity: android.app.Activity) {
-        host.bindActivity(activity)
+    fun bindActivity(activity: Activity) {
+        this.activity = activity
     }
 
-    fun unbindActivity(activity: android.app.Activity) {
-        host.unbindActivity(activity)
-    }
-
-    /**
-     * USB_DEVICE_ATTACHED: the module is present. That is not a UsbManager grant
-     * on ColorOS / targetSdk 35 — still requestPermission if hasPermission is false.
-     */
-    fun onLaunchIntent(intent: android.content.Intent?): Boolean {
-        val device = host.tiny1bFromAttachIntent(intent) ?: return false
-        Log.i(TAG, "USB_DEVICE_ATTACHED intent device=${device.deviceName} perm=${host.hasPermission(device)}")
-        attachHintDevice = device
-        host.clearDenied()
-        permissionRequestInFlight.set(false)
-        permissionStep.set(0)
-        permissionSequenceExhausted.set(false)
-        pausedDuringPermissionRequest.set(false)
-        if (running.get() && activityResumed.get()) {
-            connectIfPresent(allowPermissionRequest = true)
+    fun unbindActivity(activity: Activity) {
+        if (this.activity === activity) {
+            unregisterUsbReceiver()
+            this.activity = null
         }
-        return true
+    }
+
+    fun onLaunchIntent(intent: Intent?): Boolean {
+        if (!running.get()) return false
+        retryConnect()
+        return intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED
     }
 
     fun onActivityResumed() {
         activityResumed.set(true)
         if (!running.get()) return
-        if (permissionRequestInFlight.get()) return
-        connectIfPresent(allowPermissionRequest = true)
+        registerUsbReceiver()
+        usbHandler.removeCallbacks(attachRetryRunnable)
+        usbHandler.post { tryOpenCamera("resume") }
     }
 
     fun onActivityPaused() {
-        if (permissionRequestInFlight.get()) {
-            pausedDuringPermissionRequest.set(true)
-        }
         activityResumed.set(false)
-    }
-
-    /**
-     * Instant granted=false without a pause is not a user refuse — try the next
-     * PendingIntent variant. Do not show 无法打开 / 系统已允许 USB.
-     */
-    fun onUsbPermissionResult(granted: Boolean, hasGrantExtra: Boolean) {
-        val extra = attachHintDevice
-        val live = host.liveTiny1B(extra)
-        if (host.hasPermission(extra) || host.hasPermission(live)) {
-            permissionRequestInFlight.set(false)
-            host.clearDenied()
-            pausedDuringPermissionRequest.set(false)
-            connectIfPresent(allowPermissionRequest = false)
-            return
-        }
-        val elapsed = SystemClock.elapsedRealtime() - host.lastPermissionRequestAt
-        val looksLikeUserDialog = !granted && hasGrantExtra &&
-            (pausedDuringPermissionRequest.get() || elapsed >= 800)
-        if (looksLikeUserDialog) {
-            permissionRequestInFlight.set(false)
-            pausedDuringPermissionRequest.set(false)
-            host.markDenied()
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.PermissionDenied,
-                    statusDetail = "已拒绝 USB 权限",
-                    errorMessage = "你拒绝了 USB 访问。请点「重新扫描」，并在系统弹窗中选择「允许」。",
-                )
-            }
-            return
-        }
-        Log.w(
-            TAG,
-            "requestPermission instant false (${elapsed}ms extra=$hasGrantExtra kind=${host.lastPermissionKind}) — next variant",
-        )
-        pausedDuringPermissionRequest.set(false)
-        val next = permissionStep.incrementAndGet()
-        if (!activityResumed.get()) {
-            permissionRequestInFlight.set(false)
-            showKeepForegroundCard()
-            return
-        }
-        if (startPermissionStep(extra, live, next)) {
-            return
-        }
-        permissionRequestInFlight.set(false)
-        permissionSequenceExhausted.set(true)
-        showRequestingCard(
-            "系统尚未授权 USB。请点「重新扫描」再试一次，或拔掉 Tiny1-B 再插入。",
-        )
+        unregisterUsbReceiver()
+        // Do not destroy the JNI camera here. The USB permission dialog pauses
+        // the Activity; the demo retries on resume after the grant is stored.
     }
 
     fun onUncaught(thread: Thread, error: Throwable) {
         Log.e(TAG, "uncaught on ${thread.name}", error)
         if (_state.value.status == DeviceStatus.Connecting || _state.value.status == DeviceStatus.Live) {
-            failConnect("连接过程异常：${error.message ?: error.javaClass.simpleName}")
-        }
-    }
-
-    private fun beginPermissionSequence(
-        extra: android.hardware.usb.UsbDevice?,
-        live: android.hardware.usb.UsbDevice?,
-    ) {
-        if (!activityResumed.get()) {
-            showKeepForegroundCard()
-            return
-        }
-        permissionStep.set(0)
-        permissionSequenceExhausted.set(false)
-        permissionRequestInFlight.set(true)
-        pausedDuringPermissionRequest.set(false)
-        if (!startPermissionStep(extra, live, 0)) {
-            permissionRequestInFlight.set(false)
-            showKeepForegroundCard("未找到可请求权限的 Tiny1-B。")
-        }
-    }
-
-    private fun startPermissionStep(
-        extra: android.hardware.usb.UsbDevice?,
-        live: android.hardware.usb.UsbDevice?,
-        index: Int,
-    ): Boolean {
-        val steps = UsbPermissionSequence.steps(hasExtra = extra != null, hasLive = live != null)
-        if (index !in steps.indices) return false
-        val step = steps[index]
-        val target = when (step.target) {
-            UsbPermissionSequence.Target.INTENT_EXTRA -> extra
-            UsbPermissionSequence.Target.DEVICE_LIST -> live
-        } ?: return false
-        permissionRequestInFlight.set(true)
-        pausedDuringPermissionRequest.set(false)
-        val error = host.requestPermission(target, step.kind, index)
-        if (error != null) {
-            Log.w(TAG, "permission step $index ${step.kind} ${step.target}: $error")
-            val next = index + 1
-            permissionStep.set(next)
-            return startPermissionStep(extra, live, next)
-        }
-        showRequestingCard(
-            "请在系统弹窗中选择「允许」。正在尝试授权方式 ${index + 1}/${steps.size}。",
-        )
-        return true
-    }
-
-    private fun showRequestingCard(detail: String? = null) {
-        _state.update {
-            it.copy(
-                status = DeviceStatus.RequestingPermission,
-                statusDetail = "正在请求 USB 权限",
-                errorMessage = detail ?: "请在系统弹窗中选择「允许」。",
-            )
-        }
-    }
-
-    private fun showKeepForegroundCard(detail: String? = null) {
-        _state.update {
-            it.copy(
-                status = DeviceStatus.PermissionNeeded,
-                statusDetail = "请保持应用在前台",
-                errorMessage = detail ?: "Tiny1-B 已连接，但尚未获得 USB 权限。请将应用保持在前台，系统会请求授权。",
-            )
-        }
-    }
-
-    private fun showReplugCard(detail: String? = null) {
-        _state.update {
-            it.copy(
-                status = DeviceStatus.PermissionNeeded,
-                statusDetail = "请重新插入模组",
-                errorMessage = detail ?: "插入 Tiny1-B 时请将应用保持在前台。系统会请求 USB 权限，请选择「允许」。",
-            )
+            failUi("连接过程异常：${error.message ?: error.javaClass.simpleName}")
         }
     }
 
     fun shutter() {
-        runCatching { host.commands()?.manualShutter() }
+        synchronized(cameraLock) {
+            runCatching { camera?.manualShut() }
+        }
     }
 
     fun setKbCalibrate(enabled: Boolean) {
-        runCatching { host.commands()?.setKbCalibrate(enabled) }
+        synchronized(cameraLock) {
+            runCatching {
+                if (enabled) camera?.setKbCalibrateValid() else camera?.setKbCalibrateInvalid()
+            }
+        }
     }
 
     fun applyShutterMax(seconds: Int) {
         settings.shutterMaxSeconds = seconds
-        runCatching { host.commands()?.setShutterMaxTime(seconds) }
+        synchronized(cameraLock) {
+            runCatching { camera?.setShutterMaxTime(seconds.toByte()) }
+        }
         _state.update { it.copy(shutterMaxSeconds = seconds) }
     }
 
@@ -432,133 +338,235 @@ class ThermalEngine(
     @Volatile private var lastPlanes: ThermalPlanes? = null
     private val sampleRunning = AtomicBoolean(false)
 
-    private fun connectIfPresent(allowPermissionRequest: Boolean = true) {
-        if (!running.get()) return
-        stopSample()
-        val attached = attachHintDevice
-        val live = host.liveTiny1B(attached)
-        val device = live ?: attached
-        if (device == null) {
-            _state.update {
-                it.copy(
-                    status = if (settings.samplePreview) it.status else DeviceStatus.Searching,
-                    statusDetail = "未检测到 Tiny1-B",
-                    errorMessage = if (settings.samplePreview) it.errorMessage else null,
-                )
+    private fun tryOpenCamera(reason: String) {
+        if (!running.get() || nativeLoadFailed) return
+        synchronized(cameraLock) {
+            if (previewing && camera?.openStatus == true) {
+                return
             }
-            if (settings.samplePreview) startSample()
-            return
-        }
-        if (!host.hasPermission(attached) && !host.hasPermission(live)) {
-            if (host.lastPermissionDenied) {
+            val act = activity
+            if (act == null) {
+                showKeepForegroundCard()
+                scheduleRetry()
+                return
+            }
+            if (!ensureCameraLocked(act)) {
+                scheduleRetry()
+                return
+            }
+            val cam = camera ?: return
+            val module = findModule()
+            if (module == null) {
+                if (previewing) {
+                    stopPreviewLocked()
+                    destroyCameraLocked()
+                }
+                showSearching()
+                if (settings.samplePreview) startSample()
+                scheduleRetry()
+                return
+            }
+            stopSample()
+            if (!usbManager.hasPermission(module) && !activityResumed.get()) {
+                showKeepForegroundCard()
+                scheduleRetry()
+                return
+            }
+            if (!usbManager.hasPermission(module)) {
+                showRequestingCard()
+            } else {
                 _state.update {
                     it.copy(
-                        status = DeviceStatus.PermissionDenied,
-                        statusDetail = "已拒绝 USB 权限",
-                        errorMessage = "你拒绝了 USB 访问。请点「重新扫描」，并在系统弹窗中选择「允许」。",
+                        status = DeviceStatus.Connecting,
+                        statusDetail = "正在打开模组…",
+                        errorMessage = null,
                     )
                 }
+            }
+            val opened = runCatching { cam.open() }.getOrElse { error ->
+                Log.e(TAG, "UVCCamera.open ($reason)", error)
+                destroyCameraLocked()
+                failUi("打开相机失败：${error.javaClass.simpleName}: ${error.message}")
+                scheduleRetry()
                 return
             }
-            if (permissionRequestInFlight.get()) {
-                showRequestingCard(_state.value.errorMessage)
-                return
-            }
-            if (permissionSequenceExhausted.get()) {
-                showRequestingCard(
-                    "系统尚未授权 USB。请点「重新扫描」再试一次，或拔掉 Tiny1-B 再插入。",
-                )
-                return
-            }
-            if (!activityResumed.get()) {
-                showKeepForegroundCard()
-                return
-            }
-            if (allowPermissionRequest) {
-                beginPermissionSequence(attached, live)
-            } else {
-                showRequestingCard("尚未获得 USB 权限。请点「重新扫描」。")
-            }
-            return
-        }
-        synchronized(connectLock) {
-            if (previewing && _state.value.status == DeviceStatus.Live && host.isOpen()) {
-                return
-            }
-        }
-        if (!connecting.compareAndSet(false, true)) return
-        _state.update {
-            it.copy(status = DeviceStatus.Connecting, statusDetail = "正在打开模组…", errorMessage = null)
-        }
-        thread(name = "tiny1b-connect", isDaemon = true) {
-            try {
-                synchronized(connectLock) {
-                    openAndStartLocked(preferred = attached ?: device)
+            if (!opened) {
+                if (!usbManager.hasPermission(module)) {
+                    showRequestingCard()
+                } else {
+                    _state.update {
+                        it.copy(
+                            status = DeviceStatus.Connecting,
+                            statusDetail = "正在打开模组…",
+                            errorMessage = "已授权 USB，正在连接 libUVCCamera…",
+                        )
+                    }
                 }
-            } catch (error: Throwable) {
-                Log.e(TAG, "connect", error)
-                failConnect("连接失败：${error.javaClass.simpleName}: ${error.message}")
-            } finally {
-                connecting.set(false)
+                scheduleRetry()
+                return
             }
+            runCatching {
+                cam.setOpenStatus(true)
+                cam.setFrameCallback(frameCallback)
+                cam.startPreview()
+                cam.setShutterMaxTime(settings.shutterMaxSeconds.toByte())
+            }.onFailure { error ->
+                Log.e(TAG, "startPreview", error)
+                destroyCameraLocked()
+                failUi("无法开始预览：${error.message}")
+                scheduleRetry()
+                return
+            }
+            previewing = true
+            usbHandler.removeCallbacks(attachRetryRunnable)
+            _state.update {
+                it.copy(
+                    status = DeviceStatus.Live,
+                    statusDetail = cam.deviceName ?: module.deviceName,
+                    errorMessage = null,
+                )
+            }
+            Log.i(TAG, "live via UVCCamera ($reason) ${cam.deviceName}")
         }
     }
 
-    private fun openAndStartLocked(
-        preferred: android.hardware.usb.UsbDevice?,
-    ) {
-        if (!running.get()) return
-        if (previewing && _state.value.status == DeviceStatus.Live && host.isOpen()) return
-        if (!host.anyHasPermission(preferred)) {
-            showRequestingCard("尚未获得 USB 权限。请点「重新扫描」。")
-            return
-        }
-        disconnectLocked()
-        val opened = host.open(preferred)
-        if (!opened.ok) {
-            if (opened.needsPermission) {
-                showRequestingCard("尚未获得 USB 权限。请点「重新扫描」。")
-                return
-            }
-            failConnectLocked(opened.message ?: "USB 已授权，但无法打开设备。")
-            return
-        }
-        val conn = host.connection()
-        val device = host.openedDevice()
-        if (conn == null || device == null) {
-            failConnectLocked("USB 连接为空。请重新插拔模组后再试。${opened.message ?: ""}")
-            return
-        }
-        val error = capture.start(
-            connection = conn,
-            device = device,
-            onFrame = { frame ->
-                latestFrame.set(frame)
-                synchronized(frameLock) { frameLock.notify() }
-            },
-            onError = { message -> failConnect(message) },
-        )
-        if (error != null) {
-            failConnectLocked(error)
-            return
-        }
-        previewing = true
-        runCatching { host.commands()?.setShutterMaxTime(settings.shutterMaxSeconds) }
+    private fun onPermissionDenied() {
         _state.update {
             it.copy(
-                status = DeviceStatus.Live,
-                statusDetail = device.deviceName,
+                status = DeviceStatus.PermissionDenied,
+                statusDetail = "已拒绝 USB 权限",
+                errorMessage = "你拒绝了 USB 访问。请点「重新扫描」，并在系统弹窗中选择「允许」。",
+            )
+        }
+        scheduleRetry()
+    }
+
+    private fun onUsbDetach() {
+        synchronized(cameraLock) {
+            previewing = false
+            destroyCameraLocked()
+        }
+        _state.update {
+            it.copy(
+                status = DeviceStatus.Searching,
+                statusDetail = "模组已断开",
+                bitmap = null,
                 errorMessage = null,
+            )
+        }
+        if (settings.samplePreview) startSample()
+        usbHandler.removeCallbacks(attachRetryRunnable)
+        usbHandler.postDelayed(attachRetryRunnable, RETRY_MS)
+    }
+
+    private fun ensureCameraLocked(activity: Activity): Boolean {
+        if (camera != null) return true
+        return try {
+            val cam = UVCCamera(
+                Tiny1BFormat.VENDOR_ID,
+                Tiny1BFormat.PRODUCT_ID,
+                Tiny1BFormat.UVC_WIDTH,
+                Tiny1BFormat.UVC_HEIGHT,
+                activity,
+                usbHandler,
+            )
+            cam.create()
+            camera = cam
+            true
+        } catch (error: Throwable) {
+            nativeLoadFailed = error is UnsatisfiedLinkError
+            Log.e(TAG, "UVCCamera.create", error)
+            failUi("无法加载 USB 相机库：${error.message}")
+            false
+        }
+    }
+
+    private fun destroyCameraLocked() {
+        previewing = false
+        val cam = camera
+        camera = null
+        if (cam == null) return
+        runCatching { cam.setFrameCallback(null) }
+        runCatching { cam.stopPreview() }
+        runCatching { cam.setOpenStatus(false) }
+        runCatching { cam.destroy() }
+    }
+
+    private fun stopPreviewLocked() {
+        previewing = false
+        val cam = camera ?: return
+        runCatching { cam.setFrameCallback(null) }
+        runCatching { cam.stopPreview() }
+        runCatching { cam.setOpenStatus(false) }
+    }
+
+    private fun scheduleRetry() {
+        usbHandler.removeCallbacks(attachRetryRunnable)
+        usbHandler.postDelayed(attachRetryRunnable, RETRY_MS)
+    }
+
+    private fun findModule(): UsbDevice? =
+        usbManager.deviceList.values.firstOrNull {
+            it.vendorId == Tiny1BFormat.VENDOR_ID && it.productId == Tiny1BFormat.PRODUCT_ID
+        }
+
+    private fun registerUsbReceiver() {
+        val act = activity ?: return
+        if (usbReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            act.registerReceiver(usbStateReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            act.registerReceiver(usbStateReceiver, filter)
+        }
+        usbReceiverRegistered = true
+    }
+
+    private fun unregisterUsbReceiver() {
+        val act = activity
+        if (!usbReceiverRegistered || act == null) {
+            usbReceiverRegistered = false
+            return
+        }
+        runCatching { act.unregisterReceiver(usbStateReceiver) }
+        usbReceiverRegistered = false
+    }
+
+    private fun showRequestingCard(detail: String? = null) {
+        _state.update {
+            it.copy(
+                status = DeviceStatus.RequestingPermission,
+                statusDetail = "正在请求 USB 权限",
+                errorMessage = detail ?: "请在系统弹窗中选择「允许」。",
             )
         }
     }
 
-    private fun failConnect(message: String) {
-        synchronized(connectLock) { failConnectLocked(message) }
+    private fun showKeepForegroundCard(detail: String? = null) {
+        _state.update {
+            it.copy(
+                status = DeviceStatus.PermissionNeeded,
+                statusDetail = "请保持应用在前台",
+                errorMessage = detail ?: "Tiny1-B 已连接，但尚未获得 USB 权限。请将应用保持在前台，系统会请求授权。",
+            )
+        }
     }
 
-    private fun failConnectLocked(message: String) {
-        disconnectLocked()
+    private fun showSearching() {
+        _state.update {
+            it.copy(
+                status = if (settings.samplePreview) it.status else DeviceStatus.Searching,
+                statusDetail = "未检测到 Tiny1-B",
+                errorMessage = if (settings.samplePreview) it.errorMessage else null,
+            )
+        }
+    }
+
+    private fun failUi(message: String) {
         _state.update {
             it.copy(
                 status = DeviceStatus.Error,
@@ -567,12 +575,6 @@ class ThermalEngine(
                 bitmap = null,
             )
         }
-    }
-
-    private fun disconnectLocked() {
-        previewing = false
-        runCatching { capture.stop() }
-        host.close()
     }
 
     private fun startWorker() {
@@ -684,5 +686,6 @@ class ThermalEngine(
 
     companion object {
         private const val TAG = "ThermalEngine"
+        private const val RETRY_MS = 5000L
     }
 }

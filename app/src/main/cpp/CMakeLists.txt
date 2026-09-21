@@ -1,5 +1,0 @@
-cmake_minimum_required(VERSION 3.22.1)
-project(tiny1busb)
-add_library(tiny1busb SHARED usbfs_ioctl.c)
-find_library(log-lib log)
-target_link_libraries(tiny1busb ${log-lib})

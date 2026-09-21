@@ -11,25 +11,12 @@ android {
     defaultConfig {
         applicationId = "com.pipidu.tiny1b"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 10
-        versionName = "1.0.9"
+        // Match the vendor demo. flags=0 PendingIntent only works with targetSdk < 31.
+        targetSdk = 26
+        versionCode = 11
+        versionName = "1.0.10"
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
-        externalNativeBuild {
-            cmake {
-                arguments += listOf("-DANDROID_STL=none")
-            }
-        }
-    }
-
-    ndkVersion = "27.2.12479018"
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+            abiFilters += "arm64-v8a"
         }
     }
 
@@ -70,8 +57,18 @@ android {
         buildConfig = true
     }
 
+    lint {
+        // targetSdk 26 is required for the demo USB PendingIntent flags=0 path.
+        disable += setOf(
+            "ExpiredTargetSdkVersion",
+            "OldTargetApi",
+            "UnspecifiedImmutableFlag",
+        )
+    }
+
     packaging {
         jniLibs {
+            useLegacyPackaging = true
             keepDebugSymbols += "**/*.so"
         }
     }

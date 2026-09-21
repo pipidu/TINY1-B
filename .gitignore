@@ -21,18 +21,15 @@ keystore.properties
 *.aab
 *.dex
 
-# Vendor demo — reference only, never commit
-# Download/inspect privately. Do not add the zip, extracted tree, APKs, or sample app.
+# Vendor demo — zip and unused sample trees only (never commit)
+# Download/inspect privately. Product JNI (libUVCCamera) and
+# com.zz.infisense.camera wrappers ARE committed.
 *.zip
 热成像/
 **/ir_demo.apk
 **/libir_sample/
 vendor-demo/
 /demo/
-
-# Vendor UVC JNI — removed in 1.0.5, do not re-add
-**/jniLibs/**/*.so
-app/src/main/java/com/zz/
 
 # Scratch
 /tmp/
