@@ -10,6 +10,10 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 - The product may keep **only** the Tiny1-B pieces required to build: arm64 JNI `.so` files (`libUVCCamera`, `libuvc`, `libusb100`, `libjpeg-turbo1500`) plus the JNI Java class names those libraries bind to.
 - JNI symbols are compiled as `com.zz.infisense.camera.UVCCamera` / `IFrameCallback`. Those two classes are SDK glue, not the demo UI.
 
+## Current status
+
+Shipped on `main`: Compose app, USB session, ISR, palettes, min/max + center + user points. No vendor demo tree in git.
+
 ## Current architecture
 
 ```
@@ -63,7 +67,7 @@ export ANDROID_HOME=$HOME/Android/Sdk   # or your SDK
 
 Install `app/build/outputs/apk/debug/app-debug.apk` on an **arm64** phone with USB-OTG + Tiny1-B. Emulators cannot load the JNI `.so` files.
 
-Optional: 设置 → 样例画面, to exercise palettes/ISR/points without hardware.
+Optional: 设置 → 样例画面, to exercise palettes/ISR/points without hardware. Debug applicationId is `com.pipidu.tiny1b.debug`.
 
 ## Hardware-only gaps
 
