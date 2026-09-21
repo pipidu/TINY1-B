@@ -1,12 +1,9 @@
 package com.pipidu.tiny1b.core
 
 /**
- * Pick which Tiny1-B in [UsbManager.deviceList] corresponds to an attach-intent extra.
- *
- * Android [android.hardware.usb.UsbManager.openDevice] often returns null for the
- * parcelled [android.hardware.usb.UsbManager.EXTRA_DEVICE] even when
- * [android.hardware.usb.UsbManager.hasPermission] is true. Always open the
- * live list instance (same as the Infiray demo `UsbControlBlock.getUsbDevice`).
+ * Pick which Tiny1-B in UsbManager.deviceList corresponds to an attach-intent extra
+ * (by deviceName, then deviceId). Used as a fallback identity match — the object
+ * to open after an attach grant is the Intent EXTRA_DEVICE itself.
  */
 object UsbLiveDevice {
     /**

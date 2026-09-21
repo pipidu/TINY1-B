@@ -69,6 +69,7 @@ class ThermalEngine(
     private val permissionRequestInFlight = AtomicBoolean(false)
     private val pausedDuringPermissionRequest = AtomicBoolean(false)
     private val oneShotPermissionUsed = AtomicBoolean(false)
+    private val listPermissionAfterAttachUsed = AtomicBoolean(false)
     @Volatile private var attachGrantedDevice: android.hardware.usb.UsbDevice? = null
     private val latestFrame = AtomicReference<ByteArray?>()
     private val frameLock = Object()
@@ -90,6 +91,7 @@ class ThermalEngine(
         host.onDetach = {
             attachGrantedDevice = null
             oneShotPermissionUsed.set(false)
+            listPermissionAfterAttachUsed.set(false)
             permissionRequestInFlight.set(false)
             synchronized(connectLock) { disconnectLocked() }
             _state.update {
@@ -416,8 +418,18 @@ class ThermalEngine(
         disconnectLocked()
         val opened = host.open(preferred, grantedByAttachIntent = grantedByAttachIntent)
         if (!opened.ok) {
+            val live = host.liveTiny1B(preferred)
+            if (opened.needsListPermission &&
+                live != null &&
+                activityResumed.get() &&
+                !listPermissionAfterAttachUsed.getAndSet(true)
+            ) {
+                Log.i(TAG, "attach extra/list open failed; requestPermission on deviceList ${host.describe(live)}")
+                promptUsbPermissionOnce(live)
+                return
+            }
             val prefix = if (grantedByAttachIntent) {
-                "系统已允许 USB，但打开设备失败。"
+                "系统已允许 USB，但打开 Intent 设备对象失败。"
             } else {
                 "无法打开 USB 设备。"
             }

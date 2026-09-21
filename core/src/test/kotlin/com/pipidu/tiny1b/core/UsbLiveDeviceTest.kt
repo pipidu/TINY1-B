@@ -46,3 +46,49 @@ class UsbLiveDeviceTest {
         )
     }
 }
+
+class UsbOpenOrderTest {
+    @Test
+    fun attachGrantOpensIntentExtraBeforeDeviceList() {
+        assertEquals(
+            listOf(UsbOpenOrder.Source.INTENT_EXTRA, UsbOpenOrder.Source.DEVICE_LIST),
+            UsbOpenOrder.sources(hasExtra = true, hasLive = true, attachGrant = true),
+        )
+    }
+
+    @Test
+    fun attachGrantWithOnlyExtra() {
+        assertEquals(
+            listOf(UsbOpenOrder.Source.INTENT_EXTRA),
+            UsbOpenOrder.sources(hasExtra = true, hasLive = false, attachGrant = true),
+        )
+    }
+
+    @Test
+    fun attachGrantWithOnlyLiveStillTriesList() {
+        assertEquals(
+            listOf(UsbOpenOrder.Source.DEVICE_LIST),
+            UsbOpenOrder.sources(hasExtra = false, hasLive = true, attachGrant = true),
+        )
+    }
+
+    @Test
+    fun withoutAttachGrantPrefersDeviceListThenExtra() {
+        assertEquals(
+            listOf(UsbOpenOrder.Source.DEVICE_LIST, UsbOpenOrder.Source.INTENT_EXTRA),
+            UsbOpenOrder.sources(hasExtra = true, hasLive = true, attachGrant = false),
+        )
+        assertEquals(
+            listOf(UsbOpenOrder.Source.DEVICE_LIST),
+            UsbOpenOrder.sources(hasExtra = false, hasLive = true, attachGrant = false),
+        )
+    }
+
+    @Test
+    fun emptyWhenNeitherExists() {
+        assertEquals(
+            emptyList<UsbOpenOrder.Source>(),
+            UsbOpenOrder.sources(hasExtra = false, hasLive = false, attachGrant = true),
+        )
+    }
+}
