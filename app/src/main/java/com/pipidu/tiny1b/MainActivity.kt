@@ -30,12 +30,13 @@ class MainActivity : ComponentActivity() {
                 Tiny1BRoot(viewModel = viewModel)
             }
         }
+        viewModel.onLaunchIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        viewModel.retry()
+        viewModel.onLaunchIntent(intent)
     }
 
     override fun onStart() {

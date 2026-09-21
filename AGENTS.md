@@ -11,7 +11,7 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-On `main`: Compose app, light UI, **targetSdk 35**, USB permission via `setPackage` + `FLAG_MUTABLE` + exported receiver, **Kotlin/Java UVC** (UsbManager + control / bulk / USBFS isochronous), ISR, denoise (default off), palettes, measurement, in-app GitHub update. No vendor demo tree and no vendor `.so` in git.
+On `main`: Compose app, light UI, **targetSdk 35**, USB grant via Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`), **Kotlin/Java UVC**, ISR, denoise (default off), palettes, measurement, in-app GitHub update. No vendor demo tree and no vendor `.so` in git.
 
 ## Current architecture
 
@@ -27,7 +27,7 @@ keystore/ Project signing key (required so later APKs overwrite the same install
 - `SettingsScreen` covers ISR, 降噪, min/max, center, shutter, KB cal, sample preview, **检查更新**.
 - `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated).
 
-USB permission on **targetSdk 35**: `Intent(ACTION).setPackage(applicationId)` (not `setComponent`), `PendingIntent.FLAG_MUTABLE`, Activity context, `registerReceiver(..., RECEIVER_EXPORTED)` so UsbManager can deliver the result. Request only while resumed. Keep the permission receiver across `onPause` (the system dialog pauses the Activity). 被拒 only after a real dialog refuse.
+USB grant matches the Infiray demo model: plugging Tiny1-B into a phone with this app installed shows Android’s system USB access / “open with” dialog (`USB_DEVICE_ATTACHED` on `MainActivity` + `@xml/device_filter`). That intent **already carries permission** — `openDevice` without `requestPermission`. The in-app **授权 USB** button was a dead loop on 1.0.5 and is gone.
 
 ## UI theme
 
@@ -58,27 +58,22 @@ Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on t
 
 ## USB permission (targetSdk 35)
 
-Do **not** use `setComponent` / a manifest `UsbPermissionReceiver` (1.0.2: no system dialog, instant 被拒). Do **not** ship `targetSdk 26` (1.0.3: OS “built for an older Android” warning).
+Grant path is **plug-in**, not an in-app button. Same idea as the vendor demo (the demo has no “授权 USB” card; the system attach dialog is the grant).
 
-Current pattern (Android 14/15):
-
-1. Bind the Activity in `onResume`; do not unregister the permission receiver in `onPause` (the USB dialog pauses us). Unbind in `onDestroy`.
-2. `Intent(ACTION_USB_PERMISSION).setPackage(packageName)` — package-explicit, **no** extras, **no** component.
-3. `PendingIntent.getBroadcast(activity, 0, intent, FLAG_MUTABLE)` so UsbManager can fill `EXTRA_PERMISSION_GRANTED`. If the platform still rejects it as implicit, retry with `FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT`.
-4. `registerReceiver(receiver, filter, RECEIVER_EXPORTED)` — the result is delivered by the system USB service.
-5. Instant `granted=false` (<800ms and no pause) is **not** 被拒. 被拒 only after the user could have tapped the dialog.
-6. No Activity `USB_DEVICE_ATTACHED` filter. Plug-in uses a dynamic attach receiver (also exported).
-7. Request permission only while the Activity is resumed (unless the user taps **授权 USB**).
+1. `MainActivity` is `singleTask` + `exported` and has `android.hardware.usb.action.USB_DEVICE_ATTACHED` with meta-data `@xml/device_filter` (`vendor-id` 3034 = `0x0BDA`, `product-id` 14593 = `0x3901`).
+2. `onCreate` / `onNewIntent`: if the action is `USB_DEVICE_ATTACHED`, take `UsbManager.EXTRA_DEVICE` and **open immediately**. Do **not** call `requestPermission`.
+3. Cold start with the module already plugged: if `hasPermission`, open. If not, **one** `requestPermission` (ACTION + `setPackage` + `FLAG_MUTABLE`, receiver `RECEIVER_EXPORTED`). If no system dialog / no grant extra, show **请拔掉再插入** — never loop 需要 USB 权限 / 授权 USB.
+4. Do **not** use `setComponent` (1.0.2: instant 被拒). Do **not** ship `targetSdk 26` (1.0.3: “built for an older Android”).
+5. Do **not** stop the engine in `onPause` (the system USB dialog pauses the Activity). `stop()` only in `onDestroy` when `isFinishing`.
+6. Detach still uses a dynamic `USB_DEVICE_DETACHED` receiver (`RECEIVER_EXPORTED`).
 
 VID `0x0BDA` / PID `0x3901` unchanged.
 
 ## Connect survivability
 
-1. **USB permission PendingIntent** — targetSdk 35 + `FLAG_MUTABLE` on an implicit broadcast throws `IllegalArgumentException`. Fix: `Intent.setPackage(applicationId)`; catch request failures.
-2. **Activity.onStop during the system USB dialog** — do **not** stop the engine in `onStop`/`onPause`. `stop()` only in `onDestroy` when `isFinishing`.
-3. **USB_DEVICE_ATTACHED second Activity** — `android:launchMode="singleTask"` + `onNewIntent`.
-4. Attach receiver flags — `RECEIVER_EXPORTED` for system USB attach/detach/permission.
-5. Connect runs on `tiny1b-connect` under a mutex. Failures set `DeviceStatus.Error` with a Chinese `errorMessage`. `DeviceStatus.JniUnavailable` is gone (no vendor JNI).
+1. **USB_DEVICE_ATTACHED second Activity** — `launchMode="singleTask"` + `onNewIntent` so a plug-in does not spawn another Activity.
+2. Connect runs on `tiny1b-connect` under a mutex. Failures set `DeviceStatus.Error` with a Chinese `errorMessage`.
+3. In-app `requestPermission` is a **one-shot fallback** only. 1.0.5 treated instant `granted=false` as “tap 授权 USB again”, which never granted on hardware.
 
 ## ISR
 
@@ -106,7 +101,8 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 - **1.0.2**: attempted USB-denied fix + in-app GitHub updater (permission dialog still broken on hardware).
 - **1.0.3**: USB grant path matches Infiray demo (`targetSdk 26`) — OS “old Android” warning; JNI `mNativePtr` missing.
 - **1.0.4**: targetSdk 35 USB (`setPackage` + `FLAG_MUTABLE` + exported receiver) + `mNativePtr` JNI field.
-- **1.0.5**: drop vendor `.so` / JNI wrappers; Kotlin UVC + targetSdk 35 permission dialog that actually grants.
+- **1.0.5**: drop vendor `.so` / JNI wrappers; Kotlin UVC. In-app `requestPermission` still did not show a system dialog on hardware (授权 USB loop).
+- **1.0.6**: USB grant via Activity `USB_DEVICE_ATTACHED` + `device_filter.xml`; open on attach intent without `requestPermission`.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk

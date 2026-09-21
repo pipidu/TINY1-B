@@ -33,7 +33,11 @@ class ThermalViewModel(
     fun bindUsb(activity: android.app.Activity) = engine.bindActivity(activity)
     fun unbindUsb(activity: android.app.Activity) = engine.unbindActivity(activity)
     fun retry() = engine.retryConnect()
-    fun requestUsbPermission() = engine.requestUsbPermission()
+    fun onLaunchIntent(intent: android.content.Intent?) {
+        if (!engine.onLaunchIntent(intent)) {
+            engine.retryConnect()
+        }
+    }
     fun shutter() = engine.shutter()
     fun setKbCalibrate(enabled: Boolean) = engine.setKbCalibrate(enabled)
     fun applyShutterMax(seconds: Int) = engine.applyShutterMax(seconds)

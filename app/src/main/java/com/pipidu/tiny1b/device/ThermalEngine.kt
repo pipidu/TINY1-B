@@ -68,6 +68,8 @@ class ThermalEngine(
     private val activityResumed = AtomicBoolean(false)
     private val permissionRequestInFlight = AtomicBoolean(false)
     private val pausedDuringPermissionRequest = AtomicBoolean(false)
+    private val oneShotPermissionUsed = AtomicBoolean(false)
+    @Volatile private var attachGrantedDevice: android.hardware.usb.UsbDevice? = null
     private val latestFrame = AtomicReference<ByteArray?>()
     private val frameLock = Object()
     private val connectLock = Any()
@@ -84,8 +86,11 @@ class ThermalEngine(
     init {
         measurement.showCenter = settings.showCenter
         measurement.showMinMax = settings.showMinMax
-        host.onAttach = { connectIfPresent() }
+        host.onAttach = { connectIfPresent(allowPermissionRequest = false) }
         host.onDetach = {
+            attachGrantedDevice = null
+            oneShotPermissionUsed.set(false)
+            permissionRequestInFlight.set(false)
             synchronized(connectLock) { disconnectLocked() }
             _state.update {
                 it.copy(
@@ -97,7 +102,7 @@ class ThermalEngine(
             }
             if (settings.samplePreview) startSample()
         }
-        host.onPermissionResult = { granted -> onUsbPermissionResult(granted) }
+        host.onPermissionResult = { granted, hasGrantExtra -> onUsbPermissionResult(granted, hasGrantExtra) }
     }
 
     fun start() {
@@ -120,7 +125,7 @@ class ThermalEngine(
         worker = null
     }
 
-    fun retryConnect() = connectIfPresent()
+    fun retryConnect() = connectIfPresent(allowPermissionRequest = false)
 
     fun bindActivity(activity: android.app.Activity) {
         host.bindActivity(activity)
@@ -130,9 +135,28 @@ class ThermalEngine(
         host.unbindActivity(activity)
     }
 
+    /**
+     * System USB attach intent already granted access. Open without
+     * calling UsbManager.requestPermission.
+     * @return true if this was a Tiny1-B attach intent.
+     */
+    fun onLaunchIntent(intent: android.content.Intent?): Boolean {
+        val device = host.tiny1bFromAttachIntent(intent) ?: return false
+        Log.i(TAG, "USB_DEVICE_ATTACHED intent device=${device.deviceName}")
+        attachGrantedDevice = device
+        host.clearDenied()
+        oneShotPermissionUsed.set(true)
+        permissionRequestInFlight.set(false)
+        pausedDuringPermissionRequest.set(false)
+        if (running.get()) connectIfPresent(allowPermissionRequest = false)
+        return true
+    }
+
     fun onActivityResumed() {
         activityResumed.set(true)
-        if (running.get()) connectIfPresent()
+        if (running.get()) {
+            connectIfPresent(allowPermissionRequest = !oneShotPermissionUsed.get())
+        }
     }
 
     fun onActivityPaused() {
@@ -143,30 +167,25 @@ class ThermalEngine(
     }
 
     /**
-     * Instant granted=false (no system dialog) is NOT 被拒. The USB permission
-     * overlay pauses the activity; a real refusal therefore arrives after a pause
-     * or after the user has had time to tap the dialog.
+     * Instant granted=false with no EXTRA is not a user refuse — in-app
+     * requestPermission never showed a dialog. Tell the user to unplug/replug
+     * so the Activity attach intent can grant (demo path).
      */
-    fun onUsbPermissionResult(granted: Boolean) {
+    fun onUsbPermissionResult(granted: Boolean, hasGrantExtra: Boolean) {
         permissionRequestInFlight.set(false)
+        oneShotPermissionUsed.set(true)
         if (granted) {
             host.clearDenied()
             pausedDuringPermissionRequest.set(false)
-            connectIfPresent()
+            connectIfPresent(allowPermissionRequest = false)
             return
         }
         val elapsed = SystemClock.elapsedRealtime() - host.lastPermissionRequestAt
-        val looksLikeUserDialog = pausedDuringPermissionRequest.get() || elapsed >= 800
+        val looksLikeUserDialog = hasGrantExtra && (pausedDuringPermissionRequest.get() || elapsed >= 800)
         pausedDuringPermissionRequest.set(false)
         if (!looksLikeUserDialog) {
-            Log.w(TAG, "ignoring instant USB deny (${elapsed}ms, no pause) — dialog never shown")
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.PermissionNeeded,
-                    statusDetail = "需要 USB 权限",
-                    errorMessage = "系统将弹出 USB 授权窗口，请选择「允许」。若未出现弹窗，请点「授权 USB」。",
-                )
-            }
+            Log.w(TAG, "in-app USB request produced no dialog (${elapsed}ms extra=$hasGrantExtra)")
+            showReplugCard()
             return
         }
         host.markDenied()
@@ -174,7 +193,7 @@ class ThermalEngine(
             it.copy(
                 status = DeviceStatus.PermissionDenied,
                 statusDetail = "已拒绝 USB 权限",
-                errorMessage = "你刚才拒绝了 USB 权限。请点「授权 USB」并在系统弹窗中选择「允许」。",
+                errorMessage = "你拒绝了 USB 访问。请拔掉 Tiny1-B 再插入，并在系统弹窗中选择「允许」。",
             )
         }
     }
@@ -186,44 +205,9 @@ class ThermalEngine(
         }
     }
 
-    fun requestUsbPermission() {
-        promptUsbPermission(force = true)
-    }
-
-    private fun promptUsbPermission(force: Boolean) {
-        val device = host.findTiny1B()
-        if (device == null) {
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.Searching,
-                    statusDetail = "未检测到 Tiny1-B",
-                    errorMessage = null,
-                )
-            }
-            return
-        }
-        if (host.hasPermission(device)) {
-            connectIfPresent()
-            return
-        }
-        if (!activityResumed.get() && !force) {
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.PermissionNeeded,
-                    statusDetail = "需要 USB 权限",
-                    errorMessage = "请将应用保持在前台，系统会弹出 USB 授权窗口。",
-                )
-            }
-            return
-        }
-        if (permissionRequestInFlight.get() && !force) {
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.PermissionNeeded,
-                    statusDetail = "等待 USB 授权",
-                    errorMessage = "系统将弹出授权窗口，请选择「允许」。",
-                )
-            }
+    private fun promptUsbPermissionOnce(device: android.hardware.usb.UsbDevice) {
+        if (!activityResumed.get()) {
+            showReplugCard()
             return
         }
         permissionRequestInFlight.set(true)
@@ -231,20 +215,25 @@ class ThermalEngine(
         val error = host.requestPermission(device)
         if (error != null) {
             permissionRequestInFlight.set(false)
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.PermissionNeeded,
-                    statusDetail = "需要 USB 权限",
-                    errorMessage = error,
-                )
-            }
+            oneShotPermissionUsed.set(true)
+            showReplugCard(error)
             return
         }
         _state.update {
             it.copy(
                 status = DeviceStatus.PermissionNeeded,
                 statusDetail = "等待 USB 授权",
-                errorMessage = "系统将弹出授权窗口，请选择「允许」，否则无法取流。",
+                errorMessage = "若出现系统窗口请选择「允许」。若没有弹窗，请拔掉 Tiny1-B 再插入。",
+            )
+        }
+    }
+
+    private fun showReplugCard(detail: String? = null) {
+        _state.update {
+            it.copy(
+                status = DeviceStatus.PermissionNeeded,
+                statusDetail = "请重新插入模组",
+                errorMessage = detail ?: "插入 Tiny1-B 时，系统会询问是否允许本应用访问 USB，请选择「允许」。应用内按钮无法代替这次系统授权；请拔掉再插入。",
             )
         }
     }
@@ -369,10 +358,11 @@ class ThermalEngine(
     @Volatile private var lastPlanes: ThermalPlanes? = null
     private val sampleRunning = AtomicBoolean(false)
 
-    private fun connectIfPresent() {
+    private fun connectIfPresent(allowPermissionRequest: Boolean = true) {
         if (!running.get()) return
         stopSample()
-        val device = host.findTiny1B()
+        val attached = attachGrantedDevice
+        val device = attached ?: host.findTiny1B()
         if (device == null) {
             _state.update {
                 it.copy(
@@ -384,8 +374,13 @@ class ThermalEngine(
             if (settings.samplePreview) startSample()
             return
         }
-        if (!host.hasPermission(device)) {
-            promptUsbPermission(force = false)
+        val grantedByAttach = attached != null && attached.deviceId == device.deviceId
+        if (!grantedByAttach && !host.hasPermission(device)) {
+            if (allowPermissionRequest && !oneShotPermissionUsed.getAndSet(true) && !permissionRequestInFlight.get()) {
+                promptUsbPermissionOnce(device)
+            } else {
+                showReplugCard()
+            }
             return
         }
         synchronized(connectLock) {
@@ -400,7 +395,7 @@ class ThermalEngine(
         thread(name = "tiny1b-connect", isDaemon = true) {
             try {
                 synchronized(connectLock) {
-                    openAndStartLocked(device)
+                    openAndStartLocked(device, grantedByAttachIntent = grantedByAttach)
                 }
             } catch (error: Throwable) {
                 Log.e(TAG, "connect", error)
@@ -411,12 +406,19 @@ class ThermalEngine(
         }
     }
 
-    private fun openAndStartLocked(device: android.hardware.usb.UsbDevice) {
+    private fun openAndStartLocked(
+        device: android.hardware.usb.UsbDevice,
+        grantedByAttachIntent: Boolean,
+    ) {
         if (!running.get()) return
         if (previewing && _state.value.status == DeviceStatus.Live && host.isOpen()) return
         disconnectLocked()
-        if (!host.open(device)) {
-            failConnectLocked("无法打开 USB 设备。请确认 OTG 已开启，并重新插拔 Tiny1-B。")
+        if (!host.open(device, grantedByAttachIntent = grantedByAttachIntent)) {
+            if (grantedByAttachIntent) {
+                failConnectLocked("系统已允许 USB，但无法打开设备。请拔掉 Tiny1-B 再插入。")
+            } else {
+                failConnectLocked("无法打开 USB 设备。请确认 OTG 已开启，拔掉 Tiny1-B 再插入。")
+            }
             return
         }
         val conn = host.connection()

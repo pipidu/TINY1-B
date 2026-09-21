@@ -18,10 +18,12 @@ import java.lang.ref.WeakReference
 /**
  * USB host session for Tiny1-B.
  *
- * Permission (targetSdk 35): ACTION + setPackage(applicationId), FLAG_MUTABLE,
- * RECEIVER_EXPORTED. Request only while resumed. Keep the permission receiver
- * across onPause (the system USB dialog pauses the Activity). Do not use
- * setComponent. 被拒 is decided by [ThermalEngine], not by an instant deny.
+ * Grant path is the system USB attach dialog: Activity
+ * [UsbManager.ACTION_USB_DEVICE_ATTACHED] + `device_filter.xml`. That intent
+ * already carries permission — [open] without [requestPermission].
+ *
+ * [requestPermission] is a one-shot fallback for cold start with the module
+ * already plugged. It is not the product grant path.
  */
 class UsbHostController(context: Context) {
     private val appContext = context.applicationContext
@@ -34,44 +36,33 @@ class UsbHostController(context: Context) {
     @Volatile var lastPermissionRequestAt: Long = 0L
         private set
 
-    var onPermissionResult: ((granted: Boolean) -> Unit)? = null
+    var onPermissionResult: ((granted: Boolean, hasGrantExtra: Boolean) -> Unit)? = null
     var onAttach: (() -> Unit)? = null
     var onDetach: (() -> Unit)? = null
 
     private var activityRef = WeakReference<Activity>(null)
 
-    private val attachFilter = IntentFilter().apply {
-        addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
-        addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
-    }
+    private val detachFilter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
 
-    @Volatile private var attachRegistered = false
+    @Volatile private var detachRegistered = false
     @Volatile private var permissionRegistered = false
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != ACTION_USB_PERMISSION) return
+            val hasExtra = intent.hasExtra(UsbManager.EXTRA_PERMISSION_GRANTED)
             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-            Log.i(TAG, "permission result granted=$granted hasExtra=${intent.hasExtra(UsbManager.EXTRA_PERMISSION_GRANTED)}")
-            onPermissionResult?.invoke(granted)
+            Log.i(TAG, "permission result granted=$granted hasExtra=$hasExtra")
+            onPermissionResult?.invoke(granted, hasExtra)
         }
     }
 
-    private val attachReceiver = object : BroadcastReceiver() {
+    private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    val attached = intent.getParcelableExtraCompat<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                    if (attached == null || isTiny1B(attached)) {
-                        onAttach?.invoke()
-                    }
-                }
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    val gone = intent.getParcelableExtraCompat<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                    if (gone != null && isTiny1B(gone)) {
-                        onDetach?.invoke()
-                    }
-                }
+            if (intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED) return
+            val gone = intent.usbDeviceExtra()
+            if (gone != null && isTiny1B(gone)) {
+                onDetach?.invoke()
             }
         }
     }
@@ -92,16 +83,16 @@ class UsbHostController(context: Context) {
     }
 
     fun register() {
-        if (!attachRegistered) {
-            registerLegacy(appContext, attachReceiver, attachFilter)
-            attachRegistered = true
+        if (!detachRegistered) {
+            registerLegacy(appContext, detachReceiver, detachFilter)
+            detachRegistered = true
         }
     }
 
     fun unregister() {
-        if (attachRegistered) {
-            runCatching { appContext.unregisterReceiver(attachReceiver) }
-            attachRegistered = false
+        if (detachRegistered) {
+            runCatching { appContext.unregisterReceiver(detachReceiver) }
+            detachRegistered = false
         }
     }
 
@@ -130,13 +121,23 @@ class UsbHostController(context: Context) {
     fun isOpen(): Boolean = connection != null && fileDescriptor() > 0
 
     /**
-     * Current Android USB permission: action + setPackage (not setComponent),
-     * FLAG_MUTABLE, receiver exported so UsbManager can deliver the result.
+     * Tiny1-B from a system [UsbManager.ACTION_USB_DEVICE_ATTACHED] Activity
+     * intent. That delivery already granted USB access.
+     */
+    fun tiny1bFromAttachIntent(intent: Intent?): UsbDevice? {
+        if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return null
+        val extra = intent.usbDeviceExtra() ?: return null
+        return extra.takeIf { isTiny1B(it) }
+    }
+
+    /**
+     * One-shot cold-start fallback. Not used when the Activity was started
+     * with [UsbManager.ACTION_USB_DEVICE_ATTACHED].
      */
     fun requestPermission(usbDevice: UsbDevice): String? {
         val activity = activityRef.get()
         if (activity == null || activity.isFinishing) {
-            return "请将应用保持在前台后再授权 USB。"
+            return "请将应用保持在前台后再插入模组。"
         }
         return try {
             ensurePermissionReceiver(activity)
@@ -146,7 +147,7 @@ class UsbHostController(context: Context) {
             val pi = PendingIntent.getBroadcast(activity, 0, intent, permissionPiFlags())
             lastPermissionRequestAt = SystemClock.elapsedRealtime()
             usbManager.requestPermission(usbDevice, pi)
-            Log.i(TAG, "requestPermission issued vid=${usbDevice.vendorId} pid=${usbDevice.productId}")
+            Log.i(TAG, "requestPermission (one-shot) vid=${usbDevice.vendorId} pid=${usbDevice.productId}")
             null
         } catch (error: IllegalArgumentException) {
             Log.w(TAG, "retry USB PI with FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT", error)
@@ -161,18 +162,22 @@ class UsbHostController(context: Context) {
                 null
             } catch (retry: Throwable) {
                 Log.e(TAG, "requestPermission", retry)
-                "无法弹出 USB 授权（${retry.javaClass.simpleName}）。请拔掉后重新插入模组。"
+                "无法弹出 USB 授权。请拔掉 Tiny1-B 再插入，在系统窗口选择「允许」。"
             }
         } catch (error: Throwable) {
             Log.e(TAG, "requestPermission", error)
-            "无法弹出 USB 授权（${error.javaClass.simpleName}）。请拔掉后重新插入模组。"
+            "无法弹出 USB 授权。请拔掉 Tiny1-B 再插入，在系统窗口选择「允许」。"
         }
     }
 
+    /**
+     * @param grantedByAttachIntent true when the Activity intent was
+     * [UsbManager.ACTION_USB_DEVICE_ATTACHED] — skip hasPermission and open.
+     */
     @Synchronized
-    fun open(usbDevice: UsbDevice): Boolean {
+    fun open(usbDevice: UsbDevice, grantedByAttachIntent: Boolean = false): Boolean {
         return try {
-            if (!usbManager.hasPermission(usbDevice)) return false
+            if (!grantedByAttachIntent && !usbManager.hasPermission(usbDevice)) return false
             if (connection != null && device?.deviceId == usbDevice.deviceId) {
                 return fileDescriptor() > 0
             }
@@ -212,20 +217,6 @@ class UsbHostController(context: Context) {
         return Tiny1BCommands(conn)
     }
 
-    fun describe(usbDevice: UsbDevice): String = buildString {
-        append("vid=${usbDevice.vendorId.toString(16)} pid=${usbDevice.productId.toString(16)}")
-        append(" ifaces=${usbDevice.interfaceCount}")
-        for (i in 0 until usbDevice.interfaceCount) {
-            val iface = usbDevice.getInterface(i)
-            append(" [id=${iface.id} alt=${iface.alternateSetting} class=${iface.interfaceClass}/${iface.interfaceSubclass}")
-            for (e in 0 until iface.endpointCount) {
-                val ep = iface.getEndpoint(e)
-                append(" ep=${Integer.toHexString(ep.address)} t=${ep.type} max=${ep.maxPacketSize}")
-            }
-            append("]")
-        }
-    }
-
     private fun fileDescriptor(): Int {
         val conn = connection ?: return 0
         return try {
@@ -243,10 +234,6 @@ class UsbHostController(context: Context) {
         permissionRegistered = true
     }
 
-    /**
-     * Permission result is delivered by UsbManager (system). The receiver must be
-     * exported. Attach/detach are also system broadcasts.
-     */
     private fun registerLegacy(context: Context, receiver: BroadcastReceiver, filter: IntentFilter) {
         if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
@@ -255,10 +242,6 @@ class UsbHostController(context: Context) {
         }
     }
 
-    /**
-     * targetSdk 35: FLAG_MUTABLE so UsbManager can fill EXTRA_PERMISSION_GRANTED.
-     * Intent uses setPackage (package-explicit), not setComponent.
-     */
     private fun permissionPiFlags(): Int {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             PendingIntent.FLAG_MUTABLE
@@ -267,12 +250,12 @@ class UsbHostController(context: Context) {
         }
     }
 
-    private inline fun <reified T> Intent.getParcelableExtraCompat(key: String): T? {
+    private fun Intent.usbDeviceExtra(): UsbDevice? {
         return if (Build.VERSION.SDK_INT >= 33) {
-            getParcelableExtra(key, T::class.java)
+            getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
         } else {
             @Suppress("DEPRECATION")
-            getParcelableExtra(key)
+            getParcelableExtra(UsbManager.EXTRA_DEVICE)
         }
     }
 

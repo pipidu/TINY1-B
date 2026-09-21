@@ -12,7 +12,7 @@ fun formatTemp(celsius: Float, fahrenheit: Boolean): String {
 
 fun DeviceStatus.labelZh(): String = when (this) {
     DeviceStatus.Searching -> "未连接"
-    DeviceStatus.PermissionNeeded -> "需要权限"
+    DeviceStatus.PermissionNeeded -> "请插入"
     DeviceStatus.PermissionDenied -> "权限被拒"
     DeviceStatus.Connecting -> "正在连接"
     DeviceStatus.Live -> "已连接"

@@ -46,7 +46,6 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
                 state = state,
                 onOpenSettings = { showSettings = true },
                 onRetry = viewModel::retry,
-                onRequestPermission = viewModel::requestUsbPermission,
                 onShutter = viewModel::shutter,
                 onPalette = viewModel::setPalette,
                 onIsr = viewModel::setIsr,

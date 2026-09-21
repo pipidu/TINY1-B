@@ -77,7 +77,6 @@ fun LiveViewScreen(
     state: EngineState,
     onOpenSettings: () -> Unit,
     onRetry: () -> Unit,
-    onRequestPermission: () -> Unit,
     onShutter: () -> Unit,
     onPalette: (PaletteId) -> Unit,
     onIsr: (IsrScale) -> Unit,
@@ -120,7 +119,6 @@ fun LiveViewScreen(
             ConnectPanel(
                 state = state,
                 onRetry = onRetry,
-                onRequestPermission = onRequestPermission,
             )
         }
 
@@ -384,7 +382,6 @@ private fun MeasureHintBar(count: Int, onRemoveSelected: () -> Unit, onClear: ()
 private fun ConnectPanel(
     state: EngineState,
     onRetry: () -> Unit,
-    onRequestPermission: () -> Unit,
 ) {
     val isError = state.status == DeviceStatus.Error ||
         state.status == DeviceStatus.PermissionDenied
@@ -427,7 +424,7 @@ private fun ConnectPanel(
             Spacer(Modifier.height(20.dp))
             Text(
                 text = when (state.status) {
-                    DeviceStatus.PermissionNeeded -> "需要 USB 权限"
+                    DeviceStatus.PermissionNeeded -> "请重新插入 Tiny1-B"
                     DeviceStatus.PermissionDenied -> "USB 权限被拒绝"
                     DeviceStatus.Error -> "连接失败"
                     DeviceStatus.Connecting -> "正在连接 Tiny1-B"
@@ -441,8 +438,8 @@ private fun ConnectPanel(
             Spacer(Modifier.height(10.dp))
             Text(
                 text = state.errorMessage ?: when (state.status) {
-                    DeviceStatus.PermissionNeeded -> "系统将弹出授权窗口，请选择「允许」，否则无法取流。"
-                    DeviceStatus.PermissionDenied -> "请重新插入模组，并在弹窗中允许访问该 USB 设备。"
+                    DeviceStatus.PermissionNeeded -> "插入模组时，系统会询问是否允许本应用访问 USB，请选择「允许」。若没有弹窗，请拔掉再插入。"
+                    DeviceStatus.PermissionDenied -> "请拔掉模组再插入，并在系统弹窗中选择「允许」。"
                     DeviceStatus.Connecting -> "正在打开 UVC 数据流…"
                     else -> "使用 USB OTG 连接 Infiray Tiny1-B 热像模组。VID 0BDA · PID 3901。"
                 },
@@ -460,20 +457,11 @@ private fun ConnectPanel(
                 )
             }
             Spacer(Modifier.height(24.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (state.status == DeviceStatus.PermissionNeeded || state.status == DeviceStatus.PermissionDenied) {
-                    Button(
-                        onClick = onRequestPermission,
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
-                        shape = RoundedCornerShape(16.dp),
-                    ) { Text("授权 USB") }
-                }
-                Button(
-                    onClick = onRetry,
-                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceMuted, contentColor = Ink),
-                    shape = RoundedCornerShape(16.dp),
-                ) { Text("重新扫描") }
-            }
+            Button(
+                onClick = onRetry,
+                colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
+                shape = RoundedCornerShape(16.dp),
+            ) { Text("重新扫描") }
         }
         Spacer(Modifier.height(20.dp))
         Text(
