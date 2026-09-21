@@ -64,6 +64,12 @@ android {
             useLegacyPackaging = true
         }
     }
+
+    lint {
+        // GitHub-distributed APK, not Play. Tiny1-B USB permission needs targetSdk 26
+        // like the Infiray demo; ExpiredTargetSdkVersion would block the release assemble.
+        disable += "ExpiredTargetSdkVersion"
+    }
 }
 
 dependencies {

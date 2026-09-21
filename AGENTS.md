@@ -172,7 +172,7 @@ Optional: 设置 → 样例画面, to exercise palettes/ISR/points without hardw
 - Real Tiny1-B USB attach, permission dialog, UVC stream, shutter, and KB cal cannot be verified in this environment. 1.0.3 matches the demo’s USB grant path from source; a phone is still required to confirm the system dialog.
 - Only `arm64-v8a` vendor JNI is available. Native SIGSEGV inside `libUVCCamera` cannot be caught in Java.
 - In-app install of a downloaded APK needs a physical device + unknown-sources permission.
-- `targetSdk` is **26** on purpose (same as the Infiray demo) so Tiny1-B USB permission works on Android 14 phones.
+- `targetSdk` is **26** on purpose (same as the Infiray demo) so Tiny1-B USB permission works on Android 14 phones. Release lint disables `ExpiredTargetSdkVersion` (Play Store check; this APK is GitHub-distributed).
 
 ## Process
 
