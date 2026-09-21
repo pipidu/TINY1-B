@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TINY1-B</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="card">
+      <h1 class="title">TINY1-B</h1>
+      <p class="subtitle">A tiny starter app — Express API + static frontend.</p>
+
+      <form id="greet-form" class="row">
+        <input
+          id="name-input"
+          class="input"
+          type="text"
+          placeholder="Enter your name"
+          autocomplete="off"
+        />
+        <button class="button" type="submit">Greet</button>
+      </form>
+
+      <p id="greeting" class="greeting" aria-live="polite"></p>
+
+      <div class="status">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">checking API…</span>
+      </div>
+    </main>
+
+    <script src="./client.js"></script>
+  </body>
+</html>
