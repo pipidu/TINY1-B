@@ -213,7 +213,7 @@ private fun StatusChip(status: DeviceStatus) {
     val color = when (status) {
         DeviceStatus.Live -> Live
         DeviceStatus.Sample -> Accent
-        DeviceStatus.Error, DeviceStatus.PermissionDenied, DeviceStatus.JniUnavailable -> Hot
+        DeviceStatus.Error, DeviceStatus.PermissionDenied -> Hot
         DeviceStatus.Connecting, DeviceStatus.PermissionNeeded -> Accent
         DeviceStatus.Searching -> Muted
     }
@@ -387,7 +387,6 @@ private fun ConnectPanel(
     onRequestPermission: () -> Unit,
 ) {
     val isError = state.status == DeviceStatus.Error ||
-        state.status == DeviceStatus.JniUnavailable ||
         state.status == DeviceStatus.PermissionDenied
     Column(
         modifier = Modifier
@@ -430,7 +429,6 @@ private fun ConnectPanel(
                 text = when (state.status) {
                     DeviceStatus.PermissionNeeded -> "需要 USB 权限"
                     DeviceStatus.PermissionDenied -> "USB 权限被拒绝"
-                    DeviceStatus.JniUnavailable -> "无法加载模组驱动"
                     DeviceStatus.Error -> "连接失败"
                     DeviceStatus.Connecting -> "正在连接 Tiny1-B"
                     else -> "未检测到 Tiny1-B"
@@ -445,7 +443,6 @@ private fun ConnectPanel(
                 text = state.errorMessage ?: when (state.status) {
                     DeviceStatus.PermissionNeeded -> "系统将弹出授权窗口，请选择「允许」，否则无法取流。"
                     DeviceStatus.PermissionDenied -> "请重新插入模组，并在弹窗中允许访问该 USB 设备。"
-                    DeviceStatus.JniUnavailable -> "Tiny1-B 原生库仅支持 ARM64 真机，模拟器无法预览实机画面。"
                     DeviceStatus.Connecting -> "正在打开 UVC 数据流…"
                     else -> "使用 USB OTG 连接 Infiray Tiny1-B 热像模组。VID 0BDA · PID 3901。"
                 },

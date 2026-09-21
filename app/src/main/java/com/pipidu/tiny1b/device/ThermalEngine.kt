@@ -14,10 +14,7 @@ import com.pipidu.tiny1b.core.RenderedFrame
 import com.pipidu.tiny1b.core.SuperResolution
 import com.pipidu.tiny1b.core.SyntheticScene
 import com.pipidu.tiny1b.core.ThermalPlanes
-import com.pipidu.tiny1b.core.Tiny1BFormat
 import com.pipidu.tiny1b.data.AppSettings
-import com.zz.infisense.camera.IFrameCallback
-import com.zz.infisense.camera.UVCCamera
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
@@ -33,7 +30,6 @@ enum class DeviceStatus {
     Connecting,
     Live,
     Sample,
-    JniUnavailable,
     Error,
 }
 
@@ -66,7 +62,7 @@ class ThermalEngine(
     val host = UsbHostController(context)
     val measurement = MeasurementModel()
 
-    private val uvc = UVCCamera(Tiny1BFormat.UVC_WIDTH, Tiny1BFormat.UVC_HEIGHT)
+    private val capture = UvcCapture()
     private val running = AtomicBoolean(false)
     private val connecting = AtomicBoolean(false)
     private val activityResumed = AtomicBoolean(false)
@@ -84,17 +80,6 @@ class ThermalEngine(
 
     private val _state = MutableStateFlow(readSettings(EngineState()))
     val state: StateFlow<EngineState> = _state.asStateFlow()
-
-    private val frameCallback = IFrameCallback { frame ->
-        try {
-            if (frame != null && frame.size >= Tiny1BFormat.UVC_FRAME_BYTES) {
-                latestFrame.set(frame.copyOf())
-                synchronized(frameLock) { frameLock.notify() }
-            }
-        } catch (error: Throwable) {
-            Log.e(TAG, "onFrame", error)
-        }
-    }
 
     init {
         measurement.showCenter = settings.showCenter
@@ -122,17 +107,7 @@ class ThermalEngine(
         }
         host.register()
         startWorker()
-        if (!UVCCamera.areLibrariesLoaded()) {
-            val detail = UVCCamera.getLoadError()?.let { "当前系统无法加载 Tiny1-B 原生库：$it" }
-                ?: "当前系统无法加载 Tiny1-B 原生库，请使用 ARM64 真机。"
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.JniUnavailable,
-                    errorMessage = detail,
-                )
-            }
-            if (settings.samplePreview) startSample()
-        }
+        if (settings.samplePreview) startSample()
     }
 
     fun stop() {
@@ -180,7 +155,7 @@ class ThermalEngine(
             connectIfPresent()
             return
         }
-        val elapsed = android.os.SystemClock.elapsedRealtime() - host.lastPermissionRequestAt
+        val elapsed = SystemClock.elapsedRealtime() - host.lastPermissionRequestAt
         val looksLikeUserDialog = pausedDuringPermissionRequest.get() || elapsed >= 800
         pausedDuringPermissionRequest.set(false)
         if (!looksLikeUserDialog) {
@@ -409,14 +384,6 @@ class ThermalEngine(
             if (settings.samplePreview) startSample()
             return
         }
-        if (!UVCCamera.areLibrariesLoaded()) {
-            val detail = UVCCamera.getLoadError()?.let { "无法加载 Tiny1-B 原生库：$it" }
-                ?: "无法加载 Tiny1-B 原生库，请使用 ARM64 真机。"
-            _state.update {
-                it.copy(status = DeviceStatus.JniUnavailable, errorMessage = detail)
-            }
-            return
-        }
         if (!host.hasPermission(device)) {
             promptUsbPermission(force = false)
             return
@@ -452,25 +419,22 @@ class ThermalEngine(
             failConnectLocked("无法打开 USB 设备。请确认 OTG 已开启，并重新插拔 Tiny1-B。")
             return
         }
-        val fd = host.getFileDescriptor()
-        if (fd <= 0) {
-            failConnectLocked("USB 文件描述符无效（fd=$fd）。请重新插拔模组后再试。")
+        val conn = host.connection()
+        if (conn == null) {
+            failConnectLocked("USB 连接为空。请重新插拔模组后再试。")
             return
         }
-        try {
-            uvc.create()
-        } catch (error: Throwable) {
-            Log.e(TAG, "uvc.create", error)
-            failConnectLocked("无法创建 UVC 会话：${error.message ?: error.javaClass.simpleName}")
-            return
-        }
-        if (!uvc.connect(host)) {
-            failConnectLocked("UVC 连接失败。请确认模组为 Tiny1-B（VID 0BDA / PID 3901）且已授权。")
-            return
-        }
-        uvc.setFrameCallback(frameCallback)
-        if (!uvc.startPreview()) {
-            failConnectLocked("无法启动预览流。请重新插拔模组后再试。")
+        val error = capture.start(
+            connection = conn,
+            device = device,
+            onFrame = { frame ->
+                latestFrame.set(frame)
+                synchronized(frameLock) { frameLock.notify() }
+            },
+            onError = { message -> failConnect(message) },
+        )
+        if (error != null) {
+            failConnectLocked(error)
             return
         }
         previewing = true
@@ -500,11 +464,9 @@ class ThermalEngine(
         }
     }
 
-    /** Native UVC must release the fd before Java closes UsbDeviceConnection. */
     private fun disconnectLocked() {
         previewing = false
-        runCatching { uvc.stopPreview() }
-        runCatching { uvc.release() }
+        runCatching { capture.stop() }
         host.close()
     }
 

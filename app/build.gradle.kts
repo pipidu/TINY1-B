@@ -15,7 +15,21 @@ android {
         versionCode = 5
         versionName = "1.0.4"
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=none")
+            }
+        }
+    }
+
+    ndkVersion = "27.2.12479018"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
@@ -59,7 +73,6 @@ android {
     packaging {
         jniLibs {
             keepDebugSymbols += "**/*.so"
-            useLegacyPackaging = true
         }
     }
 }

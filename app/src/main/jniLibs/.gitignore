@@ -1,0 +1,2 @@
+# Vendor JNI was removed in 1.0.5. Do not re-add Infiray / libUVCCamera .so files.
+**/jniLibs/**/*.so

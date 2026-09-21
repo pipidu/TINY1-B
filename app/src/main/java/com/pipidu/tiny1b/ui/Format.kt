@@ -17,7 +17,6 @@ fun DeviceStatus.labelZh(): String = when (this) {
     DeviceStatus.Connecting -> "正在连接"
     DeviceStatus.Live -> "已连接"
     DeviceStatus.Sample -> "样例画面"
-    DeviceStatus.JniUnavailable -> "不支持"
     DeviceStatus.Error -> "出错"
 }
 

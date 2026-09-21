@@ -13,14 +13,17 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import com.pipidu.tiny1b.core.Tiny1BFormat
-import com.zz.infisense.camera.UVCCamera
 import java.lang.ref.WeakReference
 
 /**
  * USB host session for Tiny1-B.
- * Permission: ACTION + setPackage(applicationId), FLAG_MUTABLE, exported receiver.
+ *
+ * Permission (targetSdk 35): ACTION + setPackage(applicationId), FLAG_MUTABLE,
+ * RECEIVER_EXPORTED. Request only while resumed. Keep the permission receiver
+ * across onPause (the system USB dialog pauses the Activity). Do not use
+ * setComponent. 被拒 is decided by [ThermalEngine], not by an instant deny.
  */
-class UsbHostController(context: Context) : UVCCamera.UsbHost {
+class UsbHostController(context: Context) {
     private val appContext = context.applicationContext
     private val usbManager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
 
@@ -50,7 +53,6 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
             if (intent.action != ACTION_USB_PERMISSION) return
             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
             Log.i(TAG, "permission result granted=$granted hasExtra=${intent.hasExtra(UsbManager.EXTRA_PERMISSION_GRANTED)}")
-            lastPermissionDenied = !granted
             onPermissionResult?.invoke(granted)
         }
     }
@@ -120,6 +122,12 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     fun clearDenied() {
         lastPermissionDenied = false
     }
+
+    fun connection(): UsbDeviceConnection? = connection
+
+    fun openedDevice(): UsbDevice? = device
+
+    fun isOpen(): Boolean = connection != null && fileDescriptor() > 0
 
     /**
      * Current Android USB permission: action + setPackage (not setComponent),
@@ -204,13 +212,19 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
         return Tiny1BCommands(conn)
     }
 
-    override fun getVendorId(): Int = device?.vendorId ?: 0
-    override fun getProductId(): Int = device?.productId ?: 0
-    override fun getFileDescriptor(): Int = fileDescriptor()
-    override fun getBusNum(): Int = parsePathIndex(getDeviceName(), 2)
-    override fun getDevNum(): Int = parsePathIndex(getDeviceName(), 1)
-    override fun getDeviceName(): String = device?.deviceName.orEmpty()
-    override fun isOpen(): Boolean = connection != null && fileDescriptor() > 0
+    fun describe(usbDevice: UsbDevice): String = buildString {
+        append("vid=${usbDevice.vendorId.toString(16)} pid=${usbDevice.productId.toString(16)}")
+        append(" ifaces=${usbDevice.interfaceCount}")
+        for (i in 0 until usbDevice.interfaceCount) {
+            val iface = usbDevice.getInterface(i)
+            append(" [id=${iface.id} alt=${iface.alternateSetting} class=${iface.interfaceClass}/${iface.interfaceSubclass}")
+            for (e in 0 until iface.endpointCount) {
+                val ep = iface.getEndpoint(e)
+                append(" ep=${Integer.toHexString(ep.address)} t=${ep.type} max=${ep.maxPacketSize}")
+            }
+            append("]")
+        }
+    }
 
     private fun fileDescriptor(): Int {
         val conn = connection ?: return 0
@@ -221,12 +235,6 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
             Log.e(TAG, "fileDescriptor", error)
             0
         }
-    }
-
-    private fun parsePathIndex(name: String, fromEnd: Int): Int {
-        val parts = name.split("/")
-        if (parts.size < fromEnd) return 0
-        return parts[parts.size - fromEnd].toIntOrNull() ?: 0
     }
 
     private fun ensurePermissionReceiver(activity: Activity) {

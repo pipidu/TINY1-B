@@ -30,6 +30,10 @@ keystore.properties
 vendor-demo/
 /demo/
 
+# Vendor UVC JNI — removed in 1.0.5, do not re-add
+**/jniLibs/**/*.so
+app/src/main/java/com/zz/
+
 # Scratch
 /tmp/
 *.log
