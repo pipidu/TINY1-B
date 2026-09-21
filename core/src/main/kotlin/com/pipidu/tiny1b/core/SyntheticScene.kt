@@ -9,17 +9,17 @@ object SyntheticScene {
     ): ByteArray {
         require(width == Tiny1BFormat.UVC_WIDTH && height == Tiny1BFormat.UVC_HEIGHT)
         val frame = ByteArray(Tiny1BFormat.UVC_FRAME_BYTES)
-        val sw = Tiny1BFormat.SENSOR_WIDTH
-        val sh = Tiny1BFormat.SENSOR_HEIGHT
-        val hotX = 80 + (18 * kotlin.math.sin(t)).toInt()
-        val hotY = 70 + (12 * kotlin.math.cos(t * 0.7f)).toInt()
-        val coldX = 190
-        val coldY = 140
-        for (y in 0 until sh) {
-            for (x in 0 until sw) {
-                val i = y * sw + x
-                val gx = x / sw.toFloat()
-                val gy = y / sh.toFloat()
+        val pw = Tiny1BFormat.PLANE_WIDTH
+        val ph = Tiny1BFormat.PLANE_HEIGHT
+        val hotX = 60 + (14 * kotlin.math.sin(t)).toInt()
+        val hotY = 90 + (16 * kotlin.math.cos(t * 0.7f)).toInt()
+        val coldX = 140
+        val coldY = 190
+        for (y in 0 until ph) {
+            for (x in 0 until pw) {
+                val i = y * pw + x
+                val gx = x / pw.toFloat()
+                val gy = y / ph.toFloat()
                 val base = 20f + gx * 8f + gy * 4f
                 val hot = 42f * gauss(x, y, hotX, hotY, 28f)
                 val cold = -18f * gauss(x, y, coldX, coldY, 22f)

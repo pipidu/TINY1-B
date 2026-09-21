@@ -4,7 +4,7 @@
 
 USB 取流沿用厂商 demo 中实际能打开 Tiny1-B 的路径（`libUVCCamera` / `com.zz.infisense.camera`，targetSdk 26）。画面处理、测温和界面是本仓库的 Compose 产品：
 
-- 实时热成像预览（UVC 256×384 YUYV 叠温）
+- 实时热成像预览（UVC 256×384 YUYV 叠温，按 demo 拆成 192×256 画面 + 温度）
 - 软件 ISR 超分辨率（2× / 4×）
 - 铁红 / 白热 / 黑热 / 彩虹 / 熔岩 / 极光 / 医疗 色板
 - 最高温、最低温标注

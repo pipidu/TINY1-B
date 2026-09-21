@@ -17,30 +17,34 @@ data class ThermalPlanes(
 }
 
 object FrameParser {
+    /**
+     * Vendor demo path: `arraycopy(frame, 0, image, 0, length/2)` then treat that
+     * plane as YUYV [PLANE_WIDTH]×[PLANE_HEIGHT] (192×256). Temperature is the
+     * second half as little-endian Kelvin-16 at the same geometry. Palette, ISR,
+     * denoise, and measurement all use this native grid — not the raw YUYV as RGB.
+     */
     fun parseUvcFrame(frame: ByteArray): ThermalPlanes {
         require(frame.size >= Tiny1BFormat.UVC_FRAME_BYTES) {
             "Tiny1-B UVC frame must be ${Tiny1BFormat.UVC_FRAME_BYTES} bytes, was ${frame.size}"
         }
-        val sensorW = Tiny1BFormat.SENSOR_WIDTH
-        val sensorH = Tiny1BFormat.SENSOR_HEIGHT
-        val count = sensorW * sensorH
+        val w = Tiny1BFormat.PLANE_WIDTH
+        val h = Tiny1BFormat.PLANE_HEIGHT
+        val count = w * h
         val luminance = FloatArray(count)
         val kelvin16 = IntArray(count)
-        val image = frame
         val tempOffset = Tiny1BFormat.PLANE_BYTES
         for (i in 0 until count) {
-            luminance[i] = (image[i * 2].toInt() and 0xFF).toFloat()
+            // YUYV: Y0 U Y1 V — luminance is the even bytes, same as the demo's Y.
+            luminance[i] = (frame[i * 2].toInt() and 0xFF).toFloat()
             val lo = frame[tempOffset + i * 2].toInt() and 0xFF
             val hi = frame[tempOffset + i * 2 + 1].toInt() and 0xFF
             kelvin16[i] = lo or (hi shl 8)
         }
-        val rotatedY = rotate90Ccw(luminance, sensorW, sensorH)
-        val rotatedT = rotate90Ccw(kelvin16, sensorW, sensorH)
         return ThermalPlanes(
-            width = Tiny1BFormat.DISPLAY_WIDTH,
-            height = Tiny1BFormat.DISPLAY_HEIGHT,
-            luminance = rotatedY,
-            kelvin16 = rotatedT,
+            width = w,
+            height = h,
+            luminance = luminance,
+            kelvin16 = kelvin16,
         )
     }
 

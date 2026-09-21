@@ -16,7 +16,7 @@ The product **is** the Infiray Android demo USB/JNI camera path, with this repo�
 
 ## Current status
 
-On `main`: **1.0.10** (`versionCode` **11**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26** (same as the demo that actually opens Tiny1-B). Frames go to `FrameParser` → optional denoise → software ISR → palettes → measurement. In-app GitHub updater for `pipidu/TINY1-B`.
+On `main`: **1.0.11** (`versionCode` **12**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16 (no 256×192 rotate). Then denoise → software ISR → palettes → measurement. In-app GitHub updater for `pipidu/TINY1-B`.
 
 ## Current architecture
 
@@ -50,7 +50,7 @@ Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on t
 
 ## Tiny1-B integration (demo JNI — keep this path)
 
-1. USB host matches **VID `0x0BDA` / PID `0x3901`**, preview size **256×384** YUYV (stacked 256×192 image + 256×192 Kelvin-16).
+1. USB host matches **VID `0x0BDA` / PID `0x3901`**, preview size **256×384** YUYV. Do **not** change this JNI/USB path.
 2. `UsbControlBlock.getUsbCamera`: walk `UsbManager.getDeviceList()` for VID/PID, require UVC control interface (class 14 / subclass 1) + interrupt endpoint, then **`hasPermission`**. If false: `requestPermission` with **flags=0** and return false. **Never** invent Kotlin `openDevice` / attach-extra / deviceList grant logic from 1.0.5–1.0.9.
 3. `UVCCamera.open()`: `getUsbCamera` then `nativeConnect(mNativePtr, vid, pid, fd, bus, dev, usbfs)` then `nativeSetPreviewSize`. `getFileDescriptor()` is the only `openDevice` call, and only after `hasPermission` is true (demo layout).
 4. On grant, handler `USB_PERMISSION` / `USB_PERMIT` (or the 5s `attachRetryRunnable`) calls `open()` again now that permission exists, then `setFrameCallback` + `startPreview`.
@@ -58,7 +58,7 @@ Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on t
 6. `targetSdk` **26** like the demo. Do **not** ship targetSdk 33–35 USB PendingIntent variants (`setPackage` + `FLAG_MUTABLE`, etc.). Those never showed a working dialog on this phone.
 7. compileSdk 35 needs `registerReceiver(..., RECEIVER_EXPORTED)` on API 33+. That is the only USB API addition; permission PI stays flags=0.
 8. Do **not** destroy the JNI camera in `onPause` (USB dialog pauses the Activity). Destroy on detach and when the Activity is finishing. Resume posts the same 5s open retry as the demo.
-9. Each JNI frame is **196608** bytes. Split + rotate 90° CCW to **192×256** portrait (`FrameParser`). `°C = raw/16 − 273.15`.
+9. Each JNI frame is **196608** bytes. Demo `onFrame`: first half → YUYV **192×256** (`imageWidth = 384/2`, `imageHeight = 256`), second half → Kelvin-16 **192×256**. `FrameParser` matches that split and does **not** reshape as 256×192 then rotate (1.0.10: four horizontal bands + left/right stripes). Y is even YUYV bytes. Palette / ISR / denoise / measurement use this native temperature grid. `°C = raw/16 − 273.15`.
 10. Shutter / KB cal / shutter-max stay on `UsbControlBlock` control transfers: manual shutter `0x0345`, KB cal `0x0341`, shutter max get `0x038A` / set `0x03C4` (`bmRequestType` `0x41` / `0xC1`).
 
 Do **not** add back: `UsbHostController`, `UvcCapture`, `Usbfs`, `Tiny1BCommands`, `tiny1busb` NDK, `core/.../uvc/*`, `UsbLiveDevice`, `UsbOpenOrder`, `UsbPermissionSequence`.
@@ -87,7 +87,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.10** (`versionCode` **11**).
+- Current: **1.0.11** (`versionCode` **12**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -102,7 +102,8 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 - **1.0.7**: open the live `deviceList` Tiny1-B after grant; `setConfiguration`; USBDEVFS disconnect + force-claim unique VC/VS; real USB errors on the connect card. Hardware: grant was on Intent extra; list `hasPermission=false` and `openDevice(list)` returned null.
 - **1.0.8**: attach grant opens Intent `EXTRA_DEVICE` first (even when deviceName matches the list copy); do not require list `hasPermission`; fallback list + one `requestPermission` on that instance. Hardware: extra **and** list `hasPermission=false`, both `openDevice` null; attachGrant was a lie.
 - **1.0.9**: never `openDevice` unless `hasPermission`; show 正在请求 USB 权限 and walk targetSdk 35 `requestPermission` PI variants (setPackage+MUTABLE, implicit+UNSAFE, demo flags=0). Instant false is not 被拒. Open the instance that reports true. Hardware: still could not connect.
-- **1.0.10**: delete the from-scratch Kotlin UVC/USBFS product. Ship the vendor demo USB+JNI path (`libUVCCamera`, `com.zz.infisense.camera`, targetSdk 26, flags=0) and port ISR / denoise / measurement / palettes / settings / GitHub updater onto it.
+- **1.0.10**: delete the from-scratch Kotlin UVC/USBFS product. Ship the vendor demo USB+JNI path (`libUVCCamera`, `com.zz.infisense.camera`, targetSdk 26, flags=0) and port ISR / denoise / measurement / palettes / settings / GitHub updater onto it. Hardware: connects ~23 fps, but image was four stacked bands + side stripes.
+- **1.0.11**: frame decode matches demo `onFrame` (192×256 YUYV + Kelvin-16, no 256×192 rotate). USB/JNI unchanged.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk
