@@ -1,0 +1,34 @@
+# Gradle / Android
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+.cxx/
+captures/
+.DS_Store
+
+# Signing / secrets
+*.jks
+*.keystore
+keystore.properties
+
+# Built packages
+*.apk
+*.ap_
+*.aab
+*.dex
+
+# Vendor demo — reference only, never commit
+# Download/inspect privately. Do not add the zip, extracted tree, APKs, or sample app.
+*.zip
+热成像/
+**/ir_demo.apk
+**/libir_sample/
+vendor-demo/
+/demo/
+
+# Scratch
+/tmp/
+*.log
+.kotlin/
