@@ -57,5 +57,20 @@ class UvcProbe(val bytes: ByteArray) {
         const val SIZE_UVC15 = 48
 
         fun empty(size: Int): UvcProbe = UvcProbe(ByteArray(size.coerceIn(SIZE_UVC10, SIZE_UVC15)))
+
+        /**
+         * PROBE/COMMIT buffer sizes to try. Prefer GET_LEN, then the three
+         * standard UVC lengths so a Tiny1-B that lies about GET_LEN still
+         * negotiates.
+         */
+        fun candidateSizes(reportedLen: Int): List<Int> {
+            val preferred = when {
+                reportedLen >= SIZE_UVC15 -> SIZE_UVC15
+                reportedLen >= SIZE_UVC11 -> SIZE_UVC11
+                reportedLen >= SIZE_UVC10 -> SIZE_UVC10
+                else -> SIZE_UVC10
+            }
+            return linkedSetOf(preferred, SIZE_UVC10, SIZE_UVC11, SIZE_UVC15).toList()
+        }
     }
 }

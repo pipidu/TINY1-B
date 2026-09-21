@@ -31,6 +31,22 @@ class UvcProtocolTest {
     }
 
     @Test
+    fun probeCandidateSizesPreferReportedThenFallbacks() {
+        assertEquals(
+            listOf(UvcProbe.SIZE_UVC11, UvcProbe.SIZE_UVC10, UvcProbe.SIZE_UVC15),
+            UvcProbe.candidateSizes(UvcProbe.SIZE_UVC11),
+        )
+        assertEquals(
+            listOf(UvcProbe.SIZE_UVC10, UvcProbe.SIZE_UVC11, UvcProbe.SIZE_UVC15),
+            UvcProbe.candidateSizes(0),
+        )
+        assertEquals(
+            listOf(UvcProbe.SIZE_UVC15, UvcProbe.SIZE_UVC10, UvcProbe.SIZE_UVC11),
+            UvcProbe.candidateSizes(UvcProbe.SIZE_UVC15),
+        )
+    }
+
+    @Test
     fun probeRoundTripFormatAndPayloadSize() {
         val probe = UvcProbe.empty(UvcProbe.SIZE_UVC11)
         probe.formatIndex = 1

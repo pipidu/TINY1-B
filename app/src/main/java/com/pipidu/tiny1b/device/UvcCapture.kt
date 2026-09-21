@@ -51,31 +51,42 @@ class UvcCapture {
             "plan bulk=${plan.bulk} alt=${plan.streamingAlt} fmt=${plan.formatIndex}/${plan.frameIndex} " +
                 "ep=0x${plan.endpointAddress.toString(16)} max=${plan.maxPacketSize}",
         )
-        val vc = findInterface(device, plan.controlInterfaceNumber, 0)
+        val vc = preferredClaimInterface(device, plan.controlInterfaceNumber)
             ?: findInterfaceByClass(device, UvcDescriptors.CLASS_VIDEO, UvcDescriptors.SC_VIDEOCONTROL)
-        val vs0 = findInterface(device, plan.streamingInterfaceNumber, 0)
+        val vs0 = preferredClaimInterface(device, plan.streamingInterfaceNumber)
             ?: findInterfaceByClass(device, UvcDescriptors.CLASS_VIDEO, UvcDescriptors.SC_VIDEOSTREAMING)
         val vsStream = findInterface(device, plan.streamingInterfaceNumber, plan.streamingAlt) ?: vs0
         if (vc == null || vs0 == null || vsStream == null) {
-            return "未找到 UVC 控制/流接口。$dump"
+            return "未找到 UVC 控制/流接口（VC=${plan.controlInterfaceNumber} VS=${plan.streamingInterfaceNumber} alt=${plan.streamingAlt}）。$dump"
         }
-        if (!claim(connection, vc)) {
-            return "无法占用 UVC 控制接口。请关闭其它相机应用后重新插拔 Tiny1-B。"
+        val fd = runCatching { connection.fileDescriptor }.getOrDefault(0)
+        detachKernelDriver(connection, vc.id)
+        detachKernelDriver(connection, vs0.id)
+        val claimVc = claim(connection, vc)
+        if (!claimVc.ok) {
+            return "无法占用 UVC 控制接口。${claimVc.detail} fd=$fd。请关闭其它相机应用后重新插拔 Tiny1-B。"
         }
-        if (!claim(connection, vs0)) {
-            return "无法占用 UVC 流接口。请关闭其它相机应用后重新插拔 Tiny1-B。"
+        val claimVs = claim(connection, vs0)
+        if (!claimVs.ok) {
+            return "无法占用 UVC 流接口。${claimVs.detail} fd=$fd。请关闭其它相机应用后重新插拔 Tiny1-B。"
         }
-        if (vsStream.id != vs0.id && !claim(connection, vsStream)) {
-            Log.w(TAG, "claim extra VS interface ${vsStream.id} failed")
+        if (vsStream.id != vs0.id) {
+            val extra = claim(connection, vsStream)
+            if (!extra.ok) {
+                Log.w(TAG, "claim extra VS interface ${vsStream.id} failed ${extra.detail}")
+            }
         }
         val negotiated = negotiate(connection, plan.streamingInterfaceNumber, plan)
-            ?: return "UVC 协商（PROBE/COMMIT）失败。$dump"
-        val payloadSize = negotiated.maxPayloadTransferSize
+        val probe = negotiated.probe
+            ?: return "UVC 协商（PROBE/COMMIT）失败。${negotiated.detail} $dump"
+        val payloadSize = probe.maxPayloadTransferSize
             .takeIf { it in 64..0x10000 }
             ?: if (plan.bulk) 16384 else plan.maxPacketSize
         if (plan.streamingAlt != 0 || vsStream.alternateSetting != vs0.alternateSetting) {
-            if (!connection.setInterface(vsStream)) {
-                return "无法切换到 UVC 取流接口 alt=${plan.streamingAlt}。"
+            val setAlt = runCatching { connection.setInterface(vsStream) }
+            if (!setAlt.getOrDefault(false)) {
+                val err = setAlt.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" } ?: "false"
+                return "无法切换到 UVC 取流接口 alt=${plan.streamingAlt}（setInterface=$err）。$dump"
             }
         }
         streamingInterface = vsStream
@@ -83,7 +94,12 @@ class UvcCapture {
         val endpoint = findEndpoint(vsStream, plan)
             ?: findEndpoint(vs0, plan)
             ?: return "UVC 接口上没有匹配的输入端点。$dump"
-        runCatching { Usbfs.nativeClearHalt(connection.fileDescriptor, endpoint.address) }
+        runCatching {
+            if (Usbfs.available) {
+                val haltFd = connection.fileDescriptor
+                if (haltFd > 0) Usbfs.nativeClearHalt(haltFd, endpoint.address)
+            }
+        }
         val assembler = UvcPayloadAssembler(plan.frameBytes, onFrame)
         running.set(true)
         val firstFrameDeadline = android.os.SystemClock.elapsedRealtime() + FIRST_FRAME_MS
@@ -201,55 +217,76 @@ class UvcCapture {
         connection: UsbDeviceConnection,
         interfaceNumber: Int,
         plan: UvcStreamPlan,
-    ): UvcProbe? {
+    ): NegotiateResult {
         val reportedLen = getLen(connection, interfaceNumber)
-        val size = when {
-            reportedLen >= UvcProbe.SIZE_UVC15 -> UvcProbe.SIZE_UVC15
-            reportedLen >= UvcProbe.SIZE_UVC11 -> UvcProbe.SIZE_UVC11
-            reportedLen >= UvcProbe.SIZE_UVC10 -> UvcProbe.SIZE_UVC10
-            else -> UvcProbe.SIZE_UVC10
+        val attempts = ArrayList<String>()
+        for (size in UvcProbe.candidateSizes(reportedLen)) {
+            val probe = UvcProbe.empty(size)
+            val get1 = controlTransfer(
+                connection,
+                UvcDescriptors.RT_CLASS_INTERFACE_IN,
+                UvcDescriptors.GET_CUR,
+                UvcDescriptors.VS_PROBE_CONTROL,
+                interfaceNumber,
+                probe.bytes,
+            )
+            probe.formatIndex = plan.formatIndex
+            probe.frameIndex = plan.frameIndex
+            if (probe.maxVideoFrameSize <= 0) probe.maxVideoFrameSize = plan.frameBytes
+            if (probe.frameInterval <= 0) probe.frameInterval = 400_000
+            if (probe.maxPayloadTransferSize <= 0) {
+                probe.maxPayloadTransferSize = if (plan.bulk) 16384 else plan.maxPacketSize
+            }
+            probe.hintFrameInterval()
+            val setProbe = controlTransfer(
+                connection,
+                UvcDescriptors.RT_CLASS_INTERFACE_OUT,
+                UvcDescriptors.SET_CUR,
+                UvcDescriptors.VS_PROBE_CONTROL,
+                interfaceNumber,
+                probe.bytes,
+            )
+            if (setProbe < 0) {
+                Log.w(TAG, "SET_CUR PROBE size=$size n=$setProbe, continuing")
+            }
+            val get2 = controlTransfer(
+                connection,
+                UvcDescriptors.RT_CLASS_INTERFACE_IN,
+                UvcDescriptors.GET_CUR,
+                UvcDescriptors.VS_PROBE_CONTROL,
+                interfaceNumber,
+                probe.bytes,
+            )
+            probe.formatIndex = plan.formatIndex
+            probe.frameIndex = plan.frameIndex
+            if (probe.maxVideoFrameSize <= 0) probe.maxVideoFrameSize = plan.frameBytes
+            val commit = controlTransfer(
+                connection,
+                UvcDescriptors.RT_CLASS_INTERFACE_OUT,
+                UvcDescriptors.SET_CUR,
+                UvcDescriptors.VS_COMMIT_CONTROL,
+                interfaceNumber,
+                probe.bytes,
+            )
+            attempts += "size=$size GET_LEN=$reportedLen GET_CUR=$get1/$get2 SET_PROBE=$setProbe COMMIT=$commit"
+            if (commit > 0) {
+                Log.i(TAG, "COMMIT ok ${attempts.last()}")
+                return NegotiateResult(probe, attempts.last())
+            }
+            Log.e(TAG, "SET_CUR COMMIT failed ${attempts.last()}")
         }
-        val probe = UvcProbe.empty(size)
-        controlIn(connection, UvcDescriptors.GET_CUR, UvcDescriptors.VS_PROBE_CONTROL, interfaceNumber, probe.bytes)
-        probe.formatIndex = plan.formatIndex
-        probe.frameIndex = plan.frameIndex
-        if (probe.maxVideoFrameSize <= 0) probe.maxVideoFrameSize = plan.frameBytes
-        if (probe.frameInterval <= 0) probe.frameInterval = 400_000
-        if (probe.maxPayloadTransferSize <= 0) {
-            probe.maxPayloadTransferSize = if (plan.bulk) 16384 else plan.maxPacketSize
-        }
-        probe.hintFrameInterval()
-        if (!controlOut(connection, UvcDescriptors.SET_CUR, UvcDescriptors.VS_PROBE_CONTROL, interfaceNumber, probe.bytes)) {
-            Log.w(TAG, "SET_CUR PROBE failed, continuing")
-        }
-        controlIn(connection, UvcDescriptors.GET_CUR, UvcDescriptors.VS_PROBE_CONTROL, interfaceNumber, probe.bytes)
-        probe.formatIndex = plan.formatIndex
-        probe.frameIndex = plan.frameIndex
-        if (probe.maxVideoFrameSize <= 0) probe.maxVideoFrameSize = plan.frameBytes
-        val ok = controlOut(
-            connection,
-            UvcDescriptors.SET_CUR,
-            UvcDescriptors.VS_COMMIT_CONTROL,
-            interfaceNumber,
-            probe.bytes,
-        )
-        if (!ok) {
-            Log.e(TAG, "SET_CUR COMMIT failed")
-            return null
-        }
-        return probe
+        return NegotiateResult(null, attempts.joinToString("；"))
     }
 
     private fun getLen(connection: UsbDeviceConnection, interfaceNumber: Int): Int {
         val buf = ByteArray(2)
-        val n = connection.controlTransfer(
+        val n = controlTransfer(
+            connection,
             UvcDescriptors.RT_CLASS_INTERFACE_IN,
             UvcDescriptors.GET_LEN,
-            UvcDescriptors.VS_PROBE_CONTROL shl 8,
+            UvcDescriptors.VS_PROBE_CONTROL,
             interfaceNumber,
             buf,
-            buf.size,
-            TIMEOUT_MS,
         )
         if (n < 1) return 0
         var len = buf[0].toInt() and 0xFF
@@ -257,48 +294,84 @@ class UvcCapture {
         return len
     }
 
-    private fun controlIn(
+    private fun controlTransfer(
         connection: UsbDeviceConnection,
+        requestType: Int,
         request: Int,
         selector: Int,
         interfaceNumber: Int,
         data: ByteArray,
-    ): Boolean {
-        val n = connection.controlTransfer(
-            UvcDescriptors.RT_CLASS_INTERFACE_IN,
-            request,
-            selector shl 8,
-            interfaceNumber,
-            data,
-            data.size,
-            TIMEOUT_MS,
-        )
-        return n >= 0
+    ): Int {
+        return try {
+            connection.controlTransfer(
+                requestType,
+                request,
+                selector shl 8,
+                interfaceNumber,
+                data,
+                data.size,
+                TIMEOUT_MS,
+            )
+        } catch (error: Throwable) {
+            Log.e(TAG, "controlTransfer type=0x${requestType.toString(16)} req=0x${request.toString(16)}", error)
+            -1
+        }
     }
 
-    private fun controlOut(
-        connection: UsbDeviceConnection,
-        request: Int,
-        selector: Int,
-        interfaceNumber: Int,
-        data: ByteArray,
-    ): Boolean {
-        val n = connection.controlTransfer(
-            UvcDescriptors.RT_CLASS_INTERFACE_OUT,
-            request,
-            selector shl 8,
-            interfaceNumber,
-            data,
-            data.size,
-            TIMEOUT_MS,
-        )
-        return n >= 0
+    private fun detachKernelDriver(connection: UsbDeviceConnection, interfaceNumber: Int) {
+        val fd = runCatching { connection.fileDescriptor }.getOrDefault(0)
+        if (!Usbfs.available || fd <= 0) return
+        val rc = runCatching { Usbfs.nativeDisconnect(fd, interfaceNumber) }.getOrDefault(-1)
+        Log.i(TAG, "USBDEVFS_DISCONNECT if=$interfaceNumber ${Usbfs.errnoName(rc)}")
     }
 
-    private fun claim(connection: UsbDeviceConnection, iface: UsbInterface): Boolean {
-        val ok = runCatching { connection.claimInterface(iface, true) }.getOrDefault(false)
-        if (ok) claimed += iface
-        return ok
+    private fun claim(connection: UsbDeviceConnection, iface: UsbInterface): ClaimResult {
+        if (claimed.any { it.id == iface.id }) {
+            return ClaimResult(true, "already claimed id=${iface.id}")
+        }
+        val info = "id=${iface.id} alt=${iface.alternateSetting} class=${iface.interfaceClass}/${iface.interfaceSubclass}"
+        val first = runCatching { connection.claimInterface(iface, true) }
+        if (first.getOrDefault(false)) {
+            claimed += iface
+            return ClaimResult(true, "claimInterface(force) $info")
+        }
+        val firstErr = first.exceptionOrNull()?.let { "${it.javaClass.simpleName}:${it.message}" } ?: "false"
+        val fd = runCatching { connection.fileDescriptor }.getOrDefault(0)
+        var disconnectRc = 0
+        var nativeClaimRc = 0
+        if (Usbfs.available && fd > 0) {
+            disconnectRc = runCatching { Usbfs.nativeDisconnect(fd, iface.id) }.getOrDefault(-1)
+            val second = runCatching { connection.claimInterface(iface, true) }
+            if (second.getOrDefault(false)) {
+                claimed += iface
+                return ClaimResult(true, "disconnect=${Usbfs.errnoName(disconnectRc)} then claimInterface $info")
+            }
+            nativeClaimRc = runCatching { Usbfs.nativeClaimInterface(fd, iface.id) }.getOrDefault(-1)
+            if (nativeClaimRc == 0) {
+                claimed += iface
+                return ClaimResult(true, "USBDEVFS_CLAIMINTERFACE $info")
+            }
+            val third = runCatching { connection.claimInterface(iface, true) }
+            if (third.getOrDefault(false)) {
+                claimed += iface
+                return ClaimResult(true, "nativeClaim=${Usbfs.errnoName(nativeClaimRc)} then claimInterface $info")
+            }
+        }
+        return ClaimResult(
+            false,
+            "$info fd=$fd claim=$firstErr disconnect=${Usbfs.errnoName(disconnectRc)} nativeClaim=${Usbfs.errnoName(nativeClaimRc)}",
+        )
+    }
+
+    private fun preferredClaimInterface(device: UsbDevice, id: Int): UsbInterface? {
+        findInterface(device, id, 0)?.let { return it }
+        var found: UsbInterface? = null
+        for (i in 0 until device.interfaceCount) {
+            val iface = device.getInterface(i)
+            if (iface.id != id) continue
+            if (found == null || iface.alternateSetting < found.alternateSetting) found = iface
+        }
+        return found
     }
 
     private fun findInterface(device: UsbDevice, id: Int, alt: Int): UsbInterface? {
@@ -394,4 +467,7 @@ class UvcCapture {
         private const val TIMEOUT_MS = 1000
         private const val FIRST_FRAME_MS = 8000L
     }
+
+    private data class ClaimResult(val ok: Boolean, val detail: String)
+    private data class NegotiateResult(val probe: UvcProbe?, val detail: String)
 }

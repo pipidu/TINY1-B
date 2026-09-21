@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import com.pipidu.tiny1b.core.Tiny1BFormat
+import com.pipidu.tiny1b.core.UsbLiveDevice
 import java.lang.ref.WeakReference
 
 /**
@@ -21,6 +22,10 @@ import java.lang.ref.WeakReference
  * Grant path is the system USB attach dialog: Activity
  * [UsbManager.ACTION_USB_DEVICE_ATTACHED] + `device_filter.xml`. That intent
  * already carries permission — [open] without [requestPermission].
+ *
+ * [open] must use the live [UsbManager.getDeviceList] instance. The parcelled
+ * attach-intent [UsbManager.EXTRA_DEVICE] often makes [UsbManager.openDevice]
+ * return null even when [UsbManager.hasPermission] is true.
  *
  * [requestPermission] is a one-shot fallback for cold start with the module
  * already plugged. It is not the product grant path.
@@ -96,8 +101,22 @@ class UsbHostController(context: Context) {
         }
     }
 
-    fun findTiny1B(): UsbDevice? {
-        return usbManager.deviceList.values.firstOrNull { isTiny1B(it) }
+    fun findTiny1B(): UsbDevice? = liveTiny1B(null)
+
+    /**
+     * Tiny1-B from [UsbManager.deviceList], matching [preferred] by name then
+     * id. Never return a parcelled extra when a list instance exists.
+     */
+    fun liveTiny1B(preferred: UsbDevice? = null): UsbDevice? {
+        val list = usbManager.deviceList.values.filter { isTiny1B(it) }
+        if (list.isEmpty()) return null
+        val index = UsbLiveDevice.resolveIndex(
+            list.map { it.deviceName },
+            list.map { it.deviceId }.toIntArray(),
+            preferred?.deviceName,
+            preferred?.deviceId ?: 0,
+        )
+        return list.getOrNull(index) ?: list.first()
     }
 
     fun isTiny1B(usbDevice: UsbDevice): Boolean {
@@ -118,11 +137,20 @@ class UsbHostController(context: Context) {
 
     fun openedDevice(): UsbDevice? = device
 
-    fun isOpen(): Boolean = connection != null && fileDescriptor() > 0
+    fun isOpen(): Boolean = connection != null
+
+    fun describe(usbDevice: UsbDevice): String {
+        val perm = runCatching { usbManager.hasPermission(usbDevice).toString() }
+            .getOrElse { "err:${it.javaClass.simpleName}" }
+        return "name=${usbDevice.deviceName} id=${usbDevice.deviceId} " +
+            "vid=${usbDevice.vendorId.toString(16)} pid=${usbDevice.productId.toString(16)} " +
+            "ifaces=${usbDevice.interfaceCount} hasPermission=$perm"
+    }
 
     /**
      * Tiny1-B from a system [UsbManager.ACTION_USB_DEVICE_ATTACHED] Activity
-     * intent. That delivery already granted USB access.
+     * intent. That delivery already granted USB access — but the extra itself
+     * is often the wrong object to pass to [UsbManager.openDevice].
      */
     fun tiny1bFromAttachIntent(intent: Intent?): UsbDevice? {
         if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return null
@@ -171,32 +199,98 @@ class UsbHostController(context: Context) {
     }
 
     /**
+     * @param preferred attach-intent extra or any Tiny1-B hint. Open always
+     *   prefers [liveTiny1B].
      * @param grantedByAttachIntent true when the Activity intent was
-     * [UsbManager.ACTION_USB_DEVICE_ATTACHED] — skip hasPermission and open.
+     *   [UsbManager.ACTION_USB_DEVICE_ATTACHED] — skip hasPermission and open.
      */
     @Synchronized
-    fun open(usbDevice: UsbDevice, grantedByAttachIntent: Boolean = false): Boolean {
-        return try {
-            if (!grantedByAttachIntent && !usbManager.hasPermission(usbDevice)) return false
-            if (connection != null && device?.deviceId == usbDevice.deviceId) {
-                return fileDescriptor() > 0
+    fun open(preferred: UsbDevice?, grantedByAttachIntent: Boolean = false): OpenResult {
+        var last: OpenResult? = null
+        repeat(OPEN_ATTEMPTS) { attempt ->
+            val live = liveTiny1B(preferred)
+            val extra = preferred?.takeIf { isTiny1B(it) }
+            val candidates = ArrayList<Pair<String, UsbDevice>>(2)
+            if (live != null) {
+                candidates += "deviceList" to live
             }
-            closeConnectionOnly()
-            val opened = usbManager.openDevice(usbDevice) ?: return false
-            device = usbDevice
-            connection = opened
-            lastPermissionDenied = false
-            if (fileDescriptor() <= 0) {
-                closeConnectionOnly()
-                device = null
-                return false
+            if (extra != null && (live == null || extra.deviceName != live.deviceName)) {
+                candidates += "intentExtra" to extra
             }
-            true
+            if (candidates.isEmpty()) {
+                last = OpenResult(
+                    ok = false,
+                    message = "UsbManager.deviceList 中没有 Tiny1-B（VID 0BDA / PID 3901），attempt=${attempt + 1}。",
+                )
+                if (attempt < OPEN_ATTEMPTS - 1) SystemClock.sleep(OPEN_RETRY_MS)
+                return@repeat
+            }
+            val errors = ArrayList<String>()
+            for ((source, candidate) in candidates) {
+                val result = tryOpen(candidate, grantedByAttachIntent, source)
+                if (result.ok) return result
+                errors += result.message ?: source
+            }
+            last = OpenResult(ok = false, message = errors.joinToString("；"))
+            if (attempt < OPEN_ATTEMPTS - 1) SystemClock.sleep(OPEN_RETRY_MS)
+        }
+        return last ?: OpenResult(ok = false, message = "无法打开 Tiny1-B。")
+    }
+
+    private fun tryOpen(
+        usbDevice: UsbDevice,
+        grantedByAttachIntent: Boolean,
+        source: String,
+    ): OpenResult {
+        val info = "$source ${describe(usbDevice)} attachGrant=$grantedByAttachIntent"
+        Log.i(TAG, "open try $info")
+        val hasPerm = runCatching { usbManager.hasPermission(usbDevice) }.getOrDefault(false)
+        if (!grantedByAttachIntent && !hasPerm) {
+            return OpenResult(ok = false, message = "没有 USB 权限（$info）。")
+        }
+        if (connection != null && device?.deviceName == usbDevice.deviceName) {
+            return OpenResult(ok = true, device = device, message = "already open fd=${fileDescriptor()}")
+        }
+        closeConnectionOnly()
+        val opened = try {
+            usbManager.openDevice(usbDevice)
         } catch (error: Throwable) {
-            Log.e(TAG, "open", error)
-            closeConnectionOnly()
-            device = null
-            false
+            Log.e(TAG, "openDevice", error)
+            return OpenResult(
+                ok = false,
+                message = "openDevice 异常 ${error.javaClass.simpleName}: ${error.message}（$info）。",
+            )
+        }
+        if (opened == null) {
+            return OpenResult(
+                ok = false,
+                message = "UsbManager.openDevice 返回空（$info）。" +
+                    "系统已授权时这通常是传入了 Intent 里的 UsbDevice，而不是 deviceList 中的实例；" +
+                    "也可能被其它相机/USB 应用占用。",
+            )
+        }
+        device = usbDevice
+        connection = opened
+        val fd = fileDescriptor()
+        val cfg = applyConfiguration(opened, usbDevice)
+        lastPermissionDenied = false
+        Log.i(TAG, "openDevice ok fd=$fd setConfiguration=$cfg $info")
+        return OpenResult(
+            ok = true,
+            device = usbDevice,
+            message = "openDevice ok source=$source fd=$fd setConfiguration=$cfg",
+        )
+    }
+
+    private fun applyConfiguration(opened: UsbDeviceConnection, usbDevice: UsbDevice): String {
+        return try {
+            if (usbDevice.configurationCount <= 0) return "none"
+            val configuration = usbDevice.getConfiguration(0)
+            val ok = opened.setConfiguration(configuration)
+            if (ok) "ok id=${configuration.id}" else "false id=${configuration.id}"
+        } catch (error: Throwable) {
+            Log.w(TAG, "setConfiguration", error)
+            "err:${error.javaClass.simpleName}:${error.message}"
         }
     }
 
@@ -220,8 +314,7 @@ class UsbHostController(context: Context) {
     private fun fileDescriptor(): Int {
         val conn = connection ?: return 0
         return try {
-            val fd = conn.fileDescriptor
-            if (fd > 0) fd else 0
+            conn.fileDescriptor
         } catch (error: Throwable) {
             Log.e(TAG, "fileDescriptor", error)
             0
@@ -259,8 +352,16 @@ class UsbHostController(context: Context) {
         }
     }
 
+    data class OpenResult(
+        val ok: Boolean,
+        val device: UsbDevice? = null,
+        val message: String? = null,
+    )
+
     companion object {
         const val ACTION_USB_PERMISSION = "com.pipidu.tiny1b.USB_PERMISSION"
         private const val TAG = "UsbHostController"
+        private const val OPEN_ATTEMPTS = 3
+        private const val OPEN_RETRY_MS = 80L
     }
 }

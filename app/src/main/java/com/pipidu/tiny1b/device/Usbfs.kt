@@ -28,6 +28,26 @@ object Usbfs {
     @JvmStatic external fun nativeReap(fd: Int, timeoutMs: Int): Long
     @JvmStatic external fun nativeDiscard(fd: Int, urb: ByteBuffer): Int
     @JvmStatic external fun nativeClearHalt(fd: Int, endpoint: Int): Int
+    @JvmStatic external fun nativeDisconnect(fd: Int, interfaceNumber: Int): Int
+    @JvmStatic external fun nativeClaimInterface(fd: Int, interfaceNumber: Int): Int
+
+    fun errnoName(errno: Int): String {
+        val code = if (errno < 0) -errno else errno
+        val name = when (code) {
+            0 -> "ok"
+            1 -> "EPERM"
+            2 -> "ENOENT"
+            5 -> "EIO"
+            13 -> "EACCES"
+            16 -> "EBUSY"
+            19 -> "ENODEV"
+            22 -> "EINVAL"
+            32 -> "EPIPE"
+            110 -> "ETIMEDOUT"
+            else -> "errno"
+        }
+        return "$name($code)"
+    }
 
     private const val TAG = "Usbfs"
 }

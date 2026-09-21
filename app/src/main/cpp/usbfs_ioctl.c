@@ -1,8 +1,14 @@
 #include <jni.h>
 #include <errno.h>
 #include <poll.h>
+#include <string.h>
 #include <sys/ioctl.h>
+#include <linux/ioctl.h>
 #include <linux/usbdevice_fs.h>
+
+#ifndef USBDEVFS_DISCONNECT
+#define USBDEVFS_DISCONNECT _IO('U', 22)
+#endif
 
 static void *direct(JNIEnv *env, jobject buf) {
     if (buf == NULL) {
@@ -71,5 +77,27 @@ Java_com_pipidu_tiny1b_device_Usbfs_nativeClearHalt(JNIEnv *env, jclass cls, jin
     (void) cls;
     unsigned int ep = (unsigned int) (endpoint & 0xFF);
     int rc = ioctl(fd, USBDEVFS_CLEAR_HALT, &ep);
+    return rc < 0 ? -errno : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pipidu_tiny1b_device_Usbfs_nativeDisconnect(JNIEnv *env, jclass cls, jint fd, jint interface_number) {
+    (void) env;
+    (void) cls;
+    struct usbdevfs_ioctl cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.ifno = interface_number;
+    cmd.ioctl_code = USBDEVFS_DISCONNECT;
+    cmd.data = NULL;
+    int rc = ioctl(fd, USBDEVFS_IOCTL, &cmd);
+    return rc < 0 ? -errno : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_pipidu_tiny1b_device_Usbfs_nativeClaimInterface(JNIEnv *env, jclass cls, jint fd, jint interface_number) {
+    (void) env;
+    (void) cls;
+    unsigned int ifno = (unsigned int) interface_number;
+    int rc = ioctl(fd, USBDEVFS_CLAIMINTERFACE, &ifno);
     return rc < 0 ? -errno : 0;
 }

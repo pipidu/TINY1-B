@@ -362,7 +362,8 @@ class ThermalEngine(
         if (!running.get()) return
         stopSample()
         val attached = attachGrantedDevice
-        val device = attached ?: host.findTiny1B()
+        val live = host.liveTiny1B(attached)
+        val device = live ?: attached
         if (device == null) {
             _state.update {
                 it.copy(
@@ -374,10 +375,10 @@ class ThermalEngine(
             if (settings.samplePreview) startSample()
             return
         }
-        val grantedByAttach = attached != null && attached.deviceId == device.deviceId
-        if (!grantedByAttach && !host.hasPermission(device)) {
+        val grantedByAttach = attached != null
+        if (!grantedByAttach && !host.hasPermission(live ?: device)) {
             if (allowPermissionRequest && !oneShotPermissionUsed.getAndSet(true) && !permissionRequestInFlight.get()) {
-                promptUsbPermissionOnce(device)
+                promptUsbPermissionOnce(live ?: device)
             } else {
                 showReplugCard()
             }
@@ -395,11 +396,11 @@ class ThermalEngine(
         thread(name = "tiny1b-connect", isDaemon = true) {
             try {
                 synchronized(connectLock) {
-                    openAndStartLocked(device, grantedByAttachIntent = grantedByAttach)
+                    openAndStartLocked(preferred = attached ?: device, grantedByAttachIntent = grantedByAttach)
                 }
             } catch (error: Throwable) {
                 Log.e(TAG, "connect", error)
-                failConnect("连接失败：${error.message ?: error.javaClass.simpleName}")
+                failConnect("连接失败：${error.javaClass.simpleName}: ${error.message}")
             } finally {
                 connecting.set(false)
             }
@@ -407,23 +408,26 @@ class ThermalEngine(
     }
 
     private fun openAndStartLocked(
-        device: android.hardware.usb.UsbDevice,
+        preferred: android.hardware.usb.UsbDevice?,
         grantedByAttachIntent: Boolean,
     ) {
         if (!running.get()) return
         if (previewing && _state.value.status == DeviceStatus.Live && host.isOpen()) return
         disconnectLocked()
-        if (!host.open(device, grantedByAttachIntent = grantedByAttachIntent)) {
-            if (grantedByAttachIntent) {
-                failConnectLocked("系统已允许 USB，但无法打开设备。请拔掉 Tiny1-B 再插入。")
+        val opened = host.open(preferred, grantedByAttachIntent = grantedByAttachIntent)
+        if (!opened.ok) {
+            val prefix = if (grantedByAttachIntent) {
+                "系统已允许 USB，但打开设备失败。"
             } else {
-                failConnectLocked("无法打开 USB 设备。请确认 OTG 已开启，拔掉 Tiny1-B 再插入。")
+                "无法打开 USB 设备。"
             }
+            failConnectLocked("$prefix ${opened.message ?: "未知错误"}".trim())
             return
         }
         val conn = host.connection()
-        if (conn == null) {
-            failConnectLocked("USB 连接为空。请重新插拔模组后再试。")
+        val device = host.openedDevice()
+        if (conn == null || device == null) {
+            failConnectLocked("USB 连接为空。请重新插拔模组后再试。${opened.message ?: ""}")
             return
         }
         val error = capture.start(

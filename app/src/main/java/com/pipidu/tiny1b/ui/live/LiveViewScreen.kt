@@ -3,6 +3,8 @@ package com.pipidu.tiny1b.ui.live
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -388,6 +390,7 @@ private fun ConnectPanel(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp)
             .statusBarsPadding(),
         verticalArrangement = Arrangement.Center,
@@ -444,9 +447,9 @@ private fun ConnectPanel(
                     else -> "使用 USB OTG 连接 Infiray Tiny1-B 热像模组。VID 0BDA · PID 3901。"
                 },
                 color = Muted,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 textAlign = TextAlign.Center,
-                lineHeight = 20.sp,
+                lineHeight = 19.sp,
             )
             if (state.status == DeviceStatus.Connecting) {
                 Spacer(Modifier.height(18.dp))
