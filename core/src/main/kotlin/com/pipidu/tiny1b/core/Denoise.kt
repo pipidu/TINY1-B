@@ -5,17 +5,34 @@ package com.pipidu.tiny1b.core
  * Never mutates [ThermalPlanes.kelvin16]; measurement stays on the native grid.
  */
 object Denoise {
-    fun apply(luminance01: FloatArray, tempNorm: FloatArray, width: Int, height: Int): Pair<FloatArray, FloatArray> {
+    fun apply(
+        luminance01: FloatArray,
+        tempNorm: FloatArray,
+        width: Int,
+        height: Int,
+        destY: FloatArray? = null,
+        destT: FloatArray? = null,
+    ): Pair<FloatArray, FloatArray> {
         // 5×5 median kills salt-and-pepper speckle on Y; 3×3 median on AGC temp
         // removes isolated false-color sparkles without smearing edges as much as a blur.
-        val y = median(luminance01, width, height, radius = 2)
-        val t = median(tempNorm, width, height, radius = 1)
+        val y = median(luminance01, width, height, radius = 2, dest = destY)
+        val t = median(tempNorm, width, height, radius = 1, dest = destT)
         return y to t
     }
 
-    internal fun median(src: FloatArray, width: Int, height: Int, radius: Int): FloatArray {
-        if (radius <= 0) return src.copyOf()
-        val dst = FloatArray(src.size)
+    internal fun median(
+        src: FloatArray,
+        width: Int,
+        height: Int,
+        radius: Int,
+        dest: FloatArray? = null,
+    ): FloatArray {
+        if (radius <= 0) {
+            val copy = if (dest != null && dest.size == src.size) dest else FloatArray(src.size)
+            src.copyInto(copy)
+            return copy
+        }
+        val dst = if (dest != null && dest.size == src.size) dest else FloatArray(src.size)
         val window = FloatArray((2 * radius + 1) * (2 * radius + 1))
         for (y in 0 until height) {
             for (x in 0 until width) {

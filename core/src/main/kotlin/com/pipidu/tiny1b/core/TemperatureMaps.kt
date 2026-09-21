@@ -51,10 +51,15 @@ object TemperatureMaps {
      * Percentile stretch of Kelvin-16 values into 0..1 for palette mapping.
      * Uses a 1024-bin histogram so a 50k-pixel frame stays cheap.
      */
-    fun normalize(kelvin16: IntArray, lowPercentile: Float = 0.02f, highPercentile: Float = 0.98f): FloatArray {
+    fun normalize(
+        kelvin16: IntArray,
+        lowPercentile: Float = 0.02f,
+        highPercentile: Float = 0.98f,
+        dest: FloatArray? = null,
+    ): FloatArray {
         val (lo, hi) = percentileBounds(kelvin16, lowPercentile, highPercentile)
         val range = (hi - lo).coerceAtLeast(1)
-        val out = FloatArray(kelvin16.size)
+        val out = if (dest != null && dest.size == kelvin16.size) dest else FloatArray(kelvin16.size)
         for (i in kelvin16.indices) {
             out[i] = ((kelvin16[i] - lo).toFloat() / range).coerceIn(0f, 1f)
         }

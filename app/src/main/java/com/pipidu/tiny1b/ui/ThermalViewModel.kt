@@ -5,10 +5,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.pipidu.tiny1b.AppContainer
 import com.pipidu.tiny1b.core.DisplayRotation
+import com.pipidu.tiny1b.core.FrameGenScale
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.device.EngineState
 import com.pipidu.tiny1b.device.ThermalEngine
+import com.pipidu.tiny1b.data.AppCache
 import com.pipidu.tiny1b.update.AppUpdater
 import com.pipidu.tiny1b.update.UpdateStatus
 import kotlinx.coroutines.Job
@@ -46,6 +48,7 @@ class ThermalViewModel(
     fun applyShutterMax(seconds: Int) = engine.applyShutterMax(seconds)
     fun setPalette(id: PaletteId) = engine.setPalette(id)
     fun setIsr(scale: IsrScale) = engine.setIsr(scale)
+    fun setFrameGen(scale: FrameGenScale) = engine.setFrameGen(scale)
     fun setShowCenter(value: Boolean) = engine.setShowCenter(value)
     fun setShowMinMax(value: Boolean) = engine.setShowMinMax(value)
     fun setMirror(value: Boolean) = engine.setMirror(value)
@@ -64,6 +67,18 @@ class ThermalViewModel(
     fun capturePhoto() = engine.capturePhoto()
     fun toggleRecord() = engine.toggleRecord()
     fun onStorageDenied() = engine.flashCaptureHint("需要存储权限才能保存照片和录像")
+
+    fun clearCache(): String {
+        val keep = updater.protectedCacheFiles()
+        val downloading = updater.status.value is UpdateStatus.Downloading
+        val freed = engine.clearCache(keep)
+        updater.onDiskCacheCleared()
+        return when {
+            downloading -> "已清理缓存（更新下载未中断）"
+            freed <= 0L -> "缓存已是空的"
+            else -> "已清理 ${AppCache.formatSize(freed)}"
+        }
+    }
 
     fun checkUpdate() = viewModelScope.launch { updater.check() }
     fun downloadUpdate() {

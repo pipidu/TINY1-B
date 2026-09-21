@@ -6,9 +6,14 @@ object SyntheticScene {
         width: Int = Tiny1BFormat.UVC_WIDTH,
         height: Int = Tiny1BFormat.UVC_HEIGHT,
         t: Float = 0f,
+        dest: ByteArray? = null,
     ): ByteArray {
         require(width == Tiny1BFormat.UVC_WIDTH && height == Tiny1BFormat.UVC_HEIGHT)
-        val frame = ByteArray(Tiny1BFormat.UVC_FRAME_BYTES)
+        val frame = if (dest != null && dest.size >= Tiny1BFormat.UVC_FRAME_BYTES) {
+            dest
+        } else {
+            ByteArray(Tiny1BFormat.UVC_FRAME_BYTES)
+        }
         val pw = Tiny1BFormat.PLANE_WIDTH
         val ph = Tiny1BFormat.PLANE_HEIGHT
         val hotX = 60 + (14 * kotlin.math.sin(t)).toInt()

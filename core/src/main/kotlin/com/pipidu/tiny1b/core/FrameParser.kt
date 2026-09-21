@@ -23,27 +23,31 @@ object FrameParser {
      * second half as little-endian Kelvin-16 at the same geometry. Palette, ISR,
      * denoise, and measurement all use this native grid — not the raw YUYV as RGB.
      */
-    fun parseUvcFrame(frame: ByteArray): ThermalPlanes {
+    fun parseUvcFrame(
+        frame: ByteArray,
+        luminance: FloatArray? = null,
+        kelvin16: IntArray? = null,
+    ): ThermalPlanes {
         require(frame.size >= Tiny1BFormat.UVC_FRAME_BYTES) {
             "Tiny1-B UVC frame must be ${Tiny1BFormat.UVC_FRAME_BYTES} bytes, was ${frame.size}"
         }
         val w = Tiny1BFormat.PLANE_WIDTH
         val h = Tiny1BFormat.PLANE_HEIGHT
         val count = w * h
-        val luminance = FloatArray(count)
-        val kelvin16 = IntArray(count)
+        val y = if (luminance != null && luminance.size == count) luminance else FloatArray(count)
+        val k = if (kelvin16 != null && kelvin16.size == count) kelvin16 else IntArray(count)
         val tempOffset = Tiny1BFormat.PLANE_BYTES
         for (i in 0 until count) {
-            luminance[i] = (frame[i * 2].toInt() and 0xFF).toFloat()
+            y[i] = (frame[i * 2].toInt() and 0xFF).toFloat()
             val lo = frame[tempOffset + i * 2].toInt() and 0xFF
             val hi = frame[tempOffset + i * 2 + 1].toInt() and 0xFF
-            kelvin16[i] = lo or (hi shl 8)
+            k[i] = lo or (hi shl 8)
         }
         return ThermalPlanes(
             width = w,
             height = h,
-            luminance = luminance,
-            kelvin16 = kelvin16,
+            luminance = y,
+            kelvin16 = k,
         )
     }
 

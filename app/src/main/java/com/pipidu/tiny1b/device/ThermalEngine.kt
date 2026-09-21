@@ -17,23 +17,28 @@ import android.util.Log
 import com.pipidu.tiny1b.capture.CaptureStore
 import com.pipidu.tiny1b.capture.ThermalRecorder
 import com.pipidu.tiny1b.core.DisplayRotation
+import com.pipidu.tiny1b.core.FrameGenScale
+import com.pipidu.tiny1b.core.FrameGeneration
 import com.pipidu.tiny1b.core.FrameParser
+import com.pipidu.tiny1b.core.IspScratch
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.MeasurementModel
 import com.pipidu.tiny1b.core.MeasurementSnapshot
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.core.Palettes
 import com.pipidu.tiny1b.core.PointKind
-import com.pipidu.tiny1b.core.RenderedFrame
 import com.pipidu.tiny1b.core.SuperResolution
 import com.pipidu.tiny1b.core.SyntheticScene
 import com.pipidu.tiny1b.core.ThermalPlanes
 import com.pipidu.tiny1b.core.Tiny1BFormat
+import com.pipidu.tiny1b.data.AppCache
 import com.pipidu.tiny1b.data.AppSettings
 import com.zz.infisense.camera.IFrameCallback
 import com.zz.infisense.camera.UVCCamera
 import com.zz.infisense.camera.UsbControlBlock
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,6 +74,7 @@ data class EngineState(
     val samplePreview: Boolean = false,
     val denoise: Boolean = false,
     val rotation: DisplayRotation = DisplayRotation.DEG_0,
+    val frameGen: FrameGenScale = FrameGenScale.OFF,
     val shutterMaxSeconds: Int = 30,
     val colorBarMin: Float = 0f,
     val colorBarMax: Float = 40f,
@@ -107,6 +113,22 @@ class ThermalEngine(
     private var activity: Activity? = null
     private var camera: UVCCamera? = null
     private var usbReceiverRegistered = false
+    private val uvcScratch = Array(UVC_SCRATCH) { ByteArray(Tiny1BFormat.UVC_FRAME_BYTES) }
+    private val uvcWrite = AtomicInteger(0)
+    private val uvcBusy = AtomicInteger(-1)
+    private val sampleScratch = Array(2) { ByteArray(Tiny1BFormat.UVC_FRAME_BYTES) }
+    private val liveBitmaps = arrayOfNulls<Bitmap>(LIVE_BITMAPS)
+    private var liveBmpSlot = 0
+    private val ispScratch = IspScratch()
+    private var parseLum = FloatArray(Tiny1BFormat.PLANE_WIDTH * Tiny1BFormat.PLANE_HEIGHT)
+    private var parseKel = IntArray(Tiny1BFormat.PLANE_WIDTH * Tiny1BFormat.PLANE_HEIGHT)
+    @Volatile private var prevHold: ThermalPlanes? = null
+    @Volatile private var currHold: ThermalPlanes? = null
+    @Volatile private var blendHold: ThermalPlanes? = null
+    private val pendingInterp = AtomicInteger(0)
+    @Volatile private var interpSliceMs = 20L
+    private var lastNativeAt = 0L
+    @Volatile private var nativeIntervalMs = 45L
 
     private val _state = MutableStateFlow(readSettings(EngineState()))
     val state: StateFlow<EngineState> = _state.asStateFlow()
@@ -114,7 +136,12 @@ class ThermalEngine(
     private val frameCallback = IFrameCallback { frame ->
         if (!previewing) return@IFrameCallback
         if (frame == null || frame.size < Tiny1BFormat.UVC_FRAME_BYTES) return@IFrameCallback
-        latestFrame.set(frame.copyOf(Tiny1BFormat.UVC_FRAME_BYTES))
+        var idx = (uvcWrite.get() + 1) % UVC_SCRATCH
+        val busy = uvcBusy.get()
+        if (idx == busy) idx = (idx + 1) % UVC_SCRATCH
+        System.arraycopy(frame, 0, uvcScratch[idx], 0, Tiny1BFormat.UVC_FRAME_BYTES)
+        uvcWrite.set(idx)
+        latestFrame.set(uvcScratch[idx])
         synchronized(frameLock) { frameLock.notify() }
     }
 
@@ -187,6 +214,14 @@ class ThermalEngine(
         synchronized(frameLock) { frameLock.notifyAll() }
         worker?.join(500)
         worker = null
+        pendingInterp.set(0)
+        prevHold = null
+        currHold = null
+        blendHold = null
+        lastPlanes = null
+        latestFrame.set(null)
+        _state.update { it.copy(bitmap = null, measureEdit = false, recording = false) }
+        recycleLiveBitmaps(except = null, forceAll = true)
     }
 
     fun retryConnect() {
@@ -239,6 +274,7 @@ class ThermalEngine(
     }
 
     fun shutter() {
+        if (_state.value.status != DeviceStatus.Live) return
         synchronized(cameraLock) {
             runCatching { camera?.manualShut() }
         }
@@ -268,6 +304,12 @@ class ThermalEngine(
     fun setIsr(scale: IsrScale) {
         settings.isrScale = scale
         _state.update { it.copy(isr = scale) }
+    }
+
+    fun setFrameGen(scale: FrameGenScale) {
+        settings.frameGenScale = scale
+        if (scale == FrameGenScale.OFF) pendingInterp.set(0)
+        _state.update { it.copy(frameGen = scale) }
     }
 
     fun setShowCenter(value: Boolean) {
@@ -318,6 +360,7 @@ class ThermalEngine(
     }
 
     fun setMeasureEdit(value: Boolean) {
+        if (value && _state.value.status != DeviceStatus.Live) return
         _state.update { it.copy(measureEdit = value) }
     }
 
@@ -561,6 +604,8 @@ class ThermalEngine(
     private fun enterWaitingUi(detail: String) {
         latestFrame.set(null)
         lastPlanes = null
+        prevHold = null
+        pendingInterp.set(0)
         previewing = false
         usbHandler.removeCallbacks(presenceCheckRunnable)
         runCatching { stopRecordingInternal("模组已断开，录像已停止") }
@@ -571,6 +616,7 @@ class ThermalEngine(
                 bitmap = null,
                 errorMessage = detail,
                 recording = false,
+                measureEdit = false,
             )
         }
         synchronized(frameLock) { frameLock.notifyAll() }
@@ -693,6 +739,7 @@ class ThermalEngine(
                 statusDetail = "未检测到 Tiny1-B",
                 bitmap = null,
                 errorMessage = null,
+                measureEdit = false,
             )
         }
     }
@@ -704,6 +751,7 @@ class ThermalEngine(
                 statusDetail = "连接失败",
                 errorMessage = message,
                 bitmap = null,
+                measureEdit = false,
             )
         }
     }
@@ -716,18 +764,23 @@ class ThermalEngine(
             }
             while (running.get()) {
                 val frame = latestFrame.getAndSet(null)
-                if (frame == null) {
-                    synchronized(frameLock) {
-                        if (latestFrame.get() == null) {
-                            runCatching { frameLock.wait(200) }
-                        }
+                if (frame != null) {
+                    val busy = uvcScratch.indexOfFirst { it === frame }
+                    if (busy >= 0) uvcBusy.set(busy)
+                    try {
+                        ingestNativeFrame(frame)
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "processFrame", error)
+                    } finally {
+                        uvcBusy.set(-1)
                     }
                     continue
                 }
-                try {
-                    processFrame(frame)
-                } catch (error: Throwable) {
-                    Log.e(TAG, "processFrame", error)
+                if (emitInterpolatedOrWait()) continue
+                synchronized(frameLock) {
+                    if (latestFrame.get() == null) {
+                        runCatching { frameLock.wait(200) }
+                    }
                 }
             }
         }
@@ -737,16 +790,22 @@ class ThermalEngine(
         if (!sampleRunning.compareAndSet(false, true)) return
         sampleThread = thread(name = "tiny1b-sample", isDaemon = true) {
             var t = 0f
+            var slot = 0
             _state.update {
                 it.copy(
                     status = DeviceStatus.Sample,
                     statusDetail = "样例画面（无模组）",
                     errorMessage = null,
+                    measureEdit = false,
                 )
             }
             try {
                 while (running.get() && sampleRunning.get() && settings.samplePreview && _state.value.status != DeviceStatus.Live) {
-                    runCatching { processFrame(SyntheticScene.uvcFrame(t = t)) }
+                    val buf = sampleScratch[slot]
+                    SyntheticScene.uvcFrame(t = t, dest = buf)
+                    latestFrame.set(buf)
+                    slot = 1 - slot
+                    synchronized(frameLock) { frameLock.notify() }
                     t += 0.07f
                     Thread.sleep(45)
                 }
@@ -763,22 +822,109 @@ class ThermalEngine(
         sampleThread = null
     }
 
-    private fun processFrame(frame: ByteArray) {
+    private fun emitInterpolatedOrWait(): Boolean {
+        val extra = settings.frameGenScale.extraFrames
+        val prev = prevHold
+        val curr = currHold
+        if (extra <= 0 || prev == null || curr == null) return false
+        if (prev.width != curr.width || prev.height != curr.height) return false
+        if (pendingInterp.get() <= 0) return false
+        synchronized(frameLock) {
+            if (latestFrame.get() == null) {
+                runCatching { frameLock.wait(interpSliceMs.toLong()) }
+            }
+        }
+        if (latestFrame.get() != null) return true
+        val remaining = pendingInterp.getAndDecrement()
+        if (remaining <= 0) {
+            pendingInterp.set(0)
+            return false
+        }
+        val total = extra + 1
+        val k = total - remaining + 1
+        val t = k.toFloat() / total.toFloat()
+        try {
+            val blended = FrameGeneration.blend(prev, curr, t, blendHold)
+            blendHold = blended
+            processPlanes(blended)
+        } catch (error: Throwable) {
+            Log.e(TAG, "frameGen", error)
+        }
+        return true
+    }
+
+    private fun ingestNativeFrame(frame: ByteArray) {
         if (!previewing && !sampleRunning.get()) return
         val liveStatus = _state.value.status
         if (liveStatus != DeviceStatus.Live && liveStatus != DeviceStatus.Sample) return
-        var planes = runCatching { FrameParser.parseUvcFrame(frame) }.getOrNull() ?: return
-        planes = FrameParser.applyOrientation(planes, settings.rotation, settings.mirror)
+        val now = SystemClock.elapsedRealtime()
+        if (lastNativeAt != 0L) {
+            nativeIntervalMs = ((nativeIntervalMs * 3 + (now - lastNativeAt)) / 4).coerceIn(20L, 200L)
+        }
+        lastNativeAt = now
+        val parsed = runCatching { FrameParser.parseUvcFrame(frame, parseLum, parseKel) }.getOrNull() ?: return
+        parseLum = parsed.luminance
+        parseKel = parsed.kelvin16
+        val oriented = FrameParser.applyOrientation(parsed, settings.rotation, settings.mirror)
+        val extra = settings.frameGenScale.extraFrames
+        val oldCurr = currHold
+        val useGen = extra > 0 &&
+            nativeIntervalMs >= FrameGeneration.FAST_NATIVE_MS &&
+            oldCurr != null &&
+            oldCurr.width == oriented.width &&
+            oldCurr.height == oriented.height
+        if (useGen) {
+            val recycled = prevHold
+            prevHold = oldCurr
+            currHold = copyPlanesInto(oriented, if (recycled !== oldCurr) recycled else null)
+            lastPlanes = currHold
+            pendingInterp.set(extra)
+            interpSliceMs = (nativeIntervalMs / (extra + 1L)).coerceIn(8L, 80L)
+            val firstT = 1f / (extra + 1f)
+            val blended = FrameGeneration.blend(prevHold!!, currHold!!, firstT, blendHold)
+            blendHold = blended
+            processPlanes(blended)
+        } else {
+            prevHold = null
+            pendingInterp.set(0)
+            currHold = copyPlanesInto(oriented, currHold)
+            lastPlanes = currHold
+            processPlanes(currHold!!)
+        }
+    }
+
+    private fun copyPlanesInto(src: ThermalPlanes, dst: ThermalPlanes?): ThermalPlanes {
+        if (
+            dst != null &&
+            dst.width == src.width &&
+            dst.height == src.height &&
+            dst.luminance.size == src.pixelCount &&
+            dst.kelvin16.size == src.pixelCount &&
+            dst.luminance !== src.luminance &&
+            dst.kelvin16 !== src.kelvin16
+        ) {
+            src.luminance.copyInto(dst.luminance)
+            src.kelvin16.copyInto(dst.kelvin16)
+            return dst
+        }
+        return src.copyPlanes()
+    }
+
+    private fun processPlanes(planes: ThermalPlanes) {
+        if (!previewing && !sampleRunning.get()) return
+        val liveStatus = _state.value.status
+        if (liveStatus != DeviceStatus.Live && liveStatus != DeviceStatus.Sample) return
         lastPlanes = planes
         val palette = Palettes.get(settings.paletteId)
-        val rendered: RenderedFrame = SuperResolution.enhance(
+        val rendered = SuperResolution.enhance(
             planes,
             settings.isrScale,
             palette,
             denoise = settings.denoise,
+            scratch = ispScratch,
         )
         val snap = measurement.snapshot(planes)
-        val bmp = Bitmap.createBitmap(rendered.width, rendered.height, Bitmap.Config.ARGB_8888)
+        val bmp = obtainLiveBitmap(rendered.width, rendered.height)
         bmp.setPixels(rendered.argb, 0, rendered.width, 0, 0, rendered.width, rendered.height)
         if (recorder.recording) {
             runCatching { recorder.offer(bmp) }
@@ -803,11 +949,56 @@ class ThermalEngine(
                 fps = displayedFps,
                 palette = settings.paletteId,
                 isr = settings.isrScale,
+                frameGen = settings.frameGenScale,
                 colorBarMin = minC,
                 colorBarMax = maxC,
                 userPointCount = snap.points.count { p -> p.kind == PointKind.USER },
             )
         }
+    }
+
+    private fun obtainLiveBitmap(width: Int, height: Int): Bitmap {
+        val shown = _state.value.bitmap
+        var idx = (liveBmpSlot + 1) % LIVE_BITMAPS
+        if (liveBitmaps[idx] === shown) idx = (idx + 1) % LIVE_BITMAPS
+        val existing = liveBitmaps[idx]
+        if (existing != null && !existing.isRecycled && existing.width == width && existing.height == height) {
+            liveBmpSlot = idx
+            return existing
+        }
+        if (existing != null && existing !== shown && !existing.isRecycled) {
+            runCatching { existing.recycle() }
+        }
+        val created = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        liveBitmaps[idx] = created
+        liveBmpSlot = idx
+        return created
+    }
+
+    private fun recycleLiveBitmaps(except: Bitmap?, forceAll: Boolean) {
+        for (i in liveBitmaps.indices) {
+            val bmp = liveBitmaps[i] ?: continue
+            if (!forceAll && bmp === except) continue
+            if (!bmp.isRecycled) runCatching { bmp.recycle() }
+            liveBitmaps[i] = null
+        }
+    }
+
+    fun cacheSizeBytes(): Long = AppCache.sizeBytes(appContext)
+
+    fun clearCache(keep: Set<File>): Long {
+        val live = _state.value.status == DeviceStatus.Live || _state.value.status == DeviceStatus.Sample
+        if (live) {
+            prevHold = null
+            pendingInterp.set(0)
+        } else {
+            recycleLiveBitmaps(except = _state.value.bitmap, forceAll = false)
+            prevHold = null
+            currHold = null
+            blendHold = null
+            lastPlanes = null
+        }
+        return AppCache.clear(appContext, keep)
     }
 
     private fun readSettings(base: EngineState): EngineState = base.copy(
@@ -820,6 +1011,7 @@ class ThermalEngine(
         samplePreview = settings.samplePreview,
         denoise = settings.denoise,
         rotation = settings.rotation,
+        frameGen = settings.frameGenScale,
         shutterMaxSeconds = settings.shutterMaxSeconds,
     )
 
@@ -870,6 +1062,8 @@ class ThermalEngine(
         private const val RETRY_MS = 5000L
         private const val HINT_MS = 3500L
         private const val PRESENCE_MS = 1000L
+        private const val UVC_SCRATCH = 3
+        private const val LIVE_BITMAPS = 3
 
         private fun formatMmSs(totalSec: Int): String {
             val m = totalSec / 60

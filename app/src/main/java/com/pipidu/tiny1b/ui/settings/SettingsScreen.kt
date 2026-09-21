@@ -50,11 +50,13 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.graphics.Brush
 import com.pipidu.tiny1b.core.DisplayRotation
+import com.pipidu.tiny1b.core.FrameGenScale
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.core.Palettes
+import com.pipidu.tiny1b.data.AppCache
 import com.pipidu.tiny1b.device.EngineState
-import com.pipidu.tiny1b.ui.isLiveLike
+import com.pipidu.tiny1b.ui.isHardwareLive
 import com.pipidu.tiny1b.ui.theme.Accent
 import com.pipidu.tiny1b.ui.theme.AccentSoft
 import com.pipidu.tiny1b.ui.theme.Hot
@@ -75,6 +77,7 @@ fun SettingsScreen(
     currentVersionCode: Int,
     onBack: () -> Unit,
     onIsr: (IsrScale) -> Unit,
+    onFrameGen: (FrameGenScale) -> Unit,
     onShowCenter: (Boolean) -> Unit,
     onShowMinMax: (Boolean) -> Unit,
     onMirror: (Boolean) -> Unit,
@@ -90,8 +93,11 @@ fun SettingsScreen(
     onDownloadUpdate: () -> Unit,
     onInstallPermission: () -> Intent,
     onInstall: () -> Intent?,
+    onClearCache: () -> String,
 ) {
     val context = LocalContext.current
+    var cacheBytes by remember { mutableStateOf(AppCache.sizeBytes(context)) }
+    var cacheMessage by remember { mutableStateOf<String?>(null) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -136,6 +142,26 @@ fun SettingsScreen(
                         }
                     }
                 }
+                Text("帧生成", color = Ink, fontSize = 14.sp)
+                Text(
+                    "模组帧率偏低时，用最近两帧温度场做软件插帧，让运动看起来更顺。厂商 demo 没有此项。默认关闭；模组本身已很快（间隔 < 35ms）时自动跳过。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FrameGenScale.entries.forEach { scale ->
+                        val active = state.frameGen == scale
+                        TextButton(
+                            onClick = { onFrameGen(scale) },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (active) AccentSoft else SurfaceMuted),
+                        ) {
+                            Text(scale.labelZh, color = if (active) Accent else Ink)
+                        }
+                    }
+                }
                 Text("画面旋转", color = Ink, fontSize = 14.sp)
                 Text("顺时针旋转实时画面与测温点，下次启动仍保持该角度。", color = Muted, fontSize = 12.sp)
                 Spacer(Modifier.height(8.dp))
@@ -171,7 +197,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(4.dp))
                 Button(
                     onClick = onShutter,
-                    enabled = isLiveLike(state.status),
+                    enabled = isHardwareLive(state.status),
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
                     shape = RoundedCornerShape(14.dp),
                 ) { Text("快门校正") }
@@ -198,10 +224,31 @@ fun SettingsScreen(
             Section("预览与诊断") {
                 ToggleRow(
                     "样例画面",
-                    "无模组时生成合成热图，便于调试色板与测温点。不会代替真机取流。",
+                    "无模组时生成合成热图，便于调试色板与画面。不会代替真机取流。快门和测温仍需连接 Tiny1-B。",
                     state.samplePreview,
                     onSample,
                 )
+            }
+            Section("存储") {
+                Text("软件缓存  ${AppCache.formatSize(cacheBytes)}", color = Ink, fontSize = 14.sp)
+                Text(
+                    "实时画面最多 3 张轮换位图；插帧只保留最近两帧；更新安装包只留一份。清理不会中断 USB 取流。相册照片和录像不会删除。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(4.dp))
+                Button(
+                    onClick = {
+                        cacheMessage = onClearCache()
+                        cacheBytes = AppCache.sizeBytes(context)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("清除缓存") }
+                val msg = cacheMessage
+                if (!msg.isNullOrBlank()) {
+                    Text(msg, color = Live, fontSize = 13.sp)
+                }
             }
             Section("更新") {
                 Text("当前版本  $currentVersion  ($currentVersionCode)", color = Ink, fontSize = 14.sp)

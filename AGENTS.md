@@ -16,7 +16,7 @@ The product **is** the Infiray Android demo USB/JNI camera path, with this repo�
 
 ## Current status
 
-On `main`: **1.0.14** (`versionCode` **15**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Temperature legend is a strip **below** the live image (not over pixels). Live dock is **拍照 / 录像 / 测温** only. In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight).
+On `main`: **1.0.15** (`versionCode` **16**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off). Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
 
 ## Current architecture
 
@@ -28,10 +28,10 @@ app/src/main/jniLibs/arm64-v8a/              vendor .so (arm64 only)
 keystore/ Project signing key (required so later APKs overwrite the same install)
 ```
 
-- `ThermalEngine` constructs `UVCCamera(0x0BDA, 0x3901, 256, 384, activity, handler)`, `create()`, then `open()` with the demo 5s retry. `onFrame` → `FrameParser.parseUvcFrame`. Unplug: set Searching + `bitmap=null` first, then `UVCCamera.abandon()` (no native stop/release/destroy). Do not leave a frozen last frame with status 已连接.
-- `LiveViewScreen` is a Column: top chrome (title / fps / status / 设置), thermal stage, **below-image** legend strip + dock **拍照 / 录像 / 测温**. 快门 / 色板 / ISR / 旋转 live in Settings. Empty/permission/error cards when not live.
-- `SettingsScreen` covers 色板, ISR, 画面旋转, 降噪, min/max, center, **手动快门**, shutter max **120s**, KB cal, sample preview, **检查更新**.
-- `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated). `OneShotGate` + immediate `Downloading` so double-tap cannot start two downloads.
+- `ThermalEngine` constructs `UVCCamera(0x0BDA, 0x3901, 256, 384, activity, handler)`, `create()`, then `open()` with the demo 5s retry. `onFrame` → triple UVC scratch → `FrameParser.parseUvcFrame`. Unplug: set Searching + `bitmap=null` first, then `UVCCamera.abandon()` (no native stop/release/destroy). Do not leave a frozen last frame with status 已连接.
+- `LiveViewScreen` is a Column: top chrome (title / fps / status / 设置), thermal stage, **below-image** legend strip + dock **快门 / 拍照 / 录像 / 测温**. 色板 / ISR / 帧生成 / 旋转 live in Settings. 快门 and 测温 are disabled unless `DeviceStatus.Live`. Empty/permission/error cards when not live.
+- `SettingsScreen` covers 色板, ISR, **帧生成**, 画面旋转, 降噪, min/max, center, **手动快门**, shutter max **120s**, KB cal, sample preview, **清除缓存**, **检查更新**.
+- `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated). `OneShotGate` + immediate `Downloading` so double-tap cannot start two downloads. Prunes `cacheDir/updates` to the APK being downloaded.
 
 ## UI theme
 
@@ -72,6 +72,37 @@ Do **not** add back: `UsbHostController`, `UvcCapture`, `Usbfs`, `Tiny1BCommands
 5. Instant `granted=false` from the demo receiver is treated as 被拒 (demo). User taps 重新扫描 to ask again.
 6. Unplug: `USB_DEVICE_DETACHED` (Tiny1-B VID/PID only) or a 1s `deviceList` poll while Live. Always `Searching` + `bitmap=null` **before** `abandon()`. Chip shows 未连接. Never keep a frozen last frame.
 
+## Frame generation (帧生成)
+
+Vendor demo has **no** interpolate / synthesize UI — native UVC fps only. Product setting (default **关闭**):
+
+| Chip | Extra display frames per native interval |
+|------|------------------------------------------|
+| 关闭 | 0 (show each native plane immediately) |
+| 2× 插帧 | 1 (blend at 1/2, then the new native plane) |
+| 3× 插帧 | 2 (blend at 1/3, 2/3, then the new native plane) |
+
+One-frame delay: extra frames are synthesized from the **last two** native `ThermalPlanes` (Y + Kelvin-16 lerp) after the newer frame arrives. History is **two native holds + one blend destination**, never a growing list. If the native interval is already **< 35 ms**, interpolation is skipped so a fast module is not charged extra ISP work. Measurement samples the **blended** Kelvin grid so markers move with the extra frames. Display fps includes interpolated frames.
+
+## Cache (1.0.15)
+
+User report: software cache / RAM too large. Findings and caps:
+
+| Source | Before | Cap / recycle |
+|--------|--------|----------------|
+| Live `Bitmap.createBitmap` every frame, never recycled (ISR 4× 768×1024 ARGB ~3 MB × ~23 fps until GC) | Unbounded | **3** slot ring; `setPixels` on a slot that is not the currently displayed Compose bitmap |
+| JNI `onFrame` `copyOf(196608)` every callback | Unbounded short-lived copies | **3** UVC scratch buffers (skip the slot the worker is reading) |
+| ISR / palette `FloatArray` + `IntArray` every frame | Unbounded | One `IspScratch` reused (native + scaled + ARGB) |
+| `FrameParser` luminance/Kelvin every frame | Unbounded | Reused parse buffers + **2** oriented plane holds |
+| 帧生成 history | Would have grown if stored as a list | **2** native planes + **1** blend dest |
+| Sample preview `SyntheticScene.uvcFrame()` new `ByteArray` every tick | Unbounded | **2** sample UVC buffers; sample posts into the same worker |
+| `cacheDir/updates/*.apk` | Every downloaded version kept | Keep **1** APK (plus `.part` during download) |
+| Video encoder | `MediaCodec` input **surface**; `offer()` draws the live bitmap — no extra encoder bitmap queue | Unchanged (already bounded) |
+| Photo | One ARGB copy, recycled after JPEG | Unchanged |
+| Measurement user points | Already max **8** | Unchanged |
+
+Settings → 存储 → **清除缓存** deletes `cacheDir` / `externalCacheDir` except an in-progress update APK. It does **not** stop USB preview, recycle the on-screen live bitmap, delete gallery photos/videos, or wipe SharedPreferences. While Live, idle frame-gen `prev` is dropped; working UVC/ISR/bitmap slots stay.
+
 ## ISR
 
 `SuperResolution`: percentile-AGC on temperature, fuse Y-detail at **native** resolution, then **bilinear** 2×/4× (not 4×4 bicubic — that tanked fps on 1.0.11). Palette LUT after upsample. **Measurement always samples the oriented native grid**, not the upscaled pixels.
@@ -82,11 +113,11 @@ Settings → 画面 → **画面旋转** (0° / 90° / 180° / 270°). Stored in
 
 ## UI chrome
 
-Column: top card (title / fps / status / 设置) → **live image (fully visible)** → bottom chrome. The temperature legend (min · palette bar · max) is a **strip below the image**, never overlaid on pixels and never in the top card. Photo / video / 测温 sit in that same bottom chrome. 快门 / 色板 / ISR / 旋转 belong in Settings. Do not put a vertical bar on the right of the live image.
+Column: top card (title / fps / status / 设置) → **live image (fully visible)** → bottom chrome. The temperature legend (min · palette bar · max) is a **strip below the image**, never overlaid on pixels and never in the top card. Dock in that same bottom chrome: **快门 / 拍照 / 录像 / 测温**. 色板 / ISR / 帧生成 / 旋转 belong in Settings. Do not put a vertical bar on the right of the live image. 快门 and 测温 are grayed unless a Tiny1-B is Live; 拍照 / 录像 stay enabled for sample preview as well as Live.
 
 ## Capture
 
-Dock **拍照** / **录像** / **测温** only (with the legend strip in the same bottom chrome). JPEG and H.264 MP4 (no mic) go to the system album (`Pictures/TINY1-B`, `Movies/TINY1-B`) via MediaStore on API 29+; API 26–28 uses `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion 28`) and a media scan. Unplug stops an in-progress recording. Sample preview can also capture.
+Dock **快门 / 拍照 / 录像 / 测温** (with the legend strip in the same bottom chrome). JPEG and H.264 MP4 (no mic) go to the system album (`Pictures/TINY1-B`, `Movies/TINY1-B`) via MediaStore on API 29+; API 26–28 uses `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion 28`) and a media scan. Unplug stops an in-progress recording. Sample preview can also capture; it cannot run 快门 or 测温.
 
 ## Denoise
 
@@ -100,7 +131,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.14** (`versionCode` **15**).
+- Current: **1.0.15** (`versionCode` **16**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -120,6 +151,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 - **1.0.12**: persisted 0/90/180/270 display rotation; bilinear ISR so 超分 does not crush fps; temperature legend moved into the top FPS card.
 - **1.0.13**: unplug returns to waiting-connect (no native destroy SIGSEGV); 测温 must be on to add points; 拍照/录像; shutter max 120s; update download is single-flight; live image sits below the top card.
 - **1.0.14**: live dock only 拍照/录像/测温; 快门/色板/ISR/旋转 in Settings; legend strip **below** the image. Unplug clears the frame and sets 未连接 (DETACHED + device-list poll; do not freeze 已连接). Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` restores the system “open with this app” chooser; connect is still demo JNI.
+- **1.0.15**: Settings **帧生成** (software 2×/3× temporal blend; demo has none; default off). Dock **快门 / 拍照 / 录像 / 测温**; 快门 and 测温 grayed without a live Tiny1-B. Cap/recycle live bitmaps (3), UVC scratch (3), ISR scratch, frame-gen history (2+1), sample UVC (2), update APKs (1). Settings **清除缓存**. USB/JNI path unchanged.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk
@@ -145,7 +177,7 @@ If a future change were forced to keep demo `applicationId` `com.dashazi.p2demo`
 
 ## In-app update
 
-Settings → 更新 → **检查更新**. Compares `BuildConfig.VERSION_NAME` to the latest GitHub Release **tag** (`AppVersion`, so 1.0.3 is newer than 1.0.2). Parser must tolerate logins like `cursor[bot]` (brackets inside JSON strings). HTTP uses User-Agent `TINY1-B/<version> (+https://github.com/pipidu/TINY1-B)`, follows GitHub → `release-assets.githubusercontent.com` redirects **without** the API `Accept` header, and stores the APK under `cacheDir/updates/`. Install uses `FileProvider` + `ClipData` + `REQUEST_INSTALL_PACKAGES` (unknown-sources screen on API 26+). Failures show a Chinese error; no force-update.
+Settings → 更新 → **检查更新**. Compares `BuildConfig.VERSION_NAME` to the latest GitHub Release **tag** (`AppVersion`, so 1.0.3 is newer than 1.0.2). Parser must tolerate logins like `cursor[bot]` (brackets inside JSON strings). HTTP uses User-Agent `TINY1-B/<version> (+https://github.com/pipidu/TINY1-B)`, follows GitHub → `release-assets.githubusercontent.com` redirects **without** the API `Accept` header, and stores the APK under `cacheDir/updates/` (**one** APK; older files pruned). Install uses `FileProvider` + `ClipData` + `REQUEST_INSTALL_PACKAGES` (unknown-sources screen on API 26+). Failures show a Chinese error; no force-update.
 
 ## Layout
 

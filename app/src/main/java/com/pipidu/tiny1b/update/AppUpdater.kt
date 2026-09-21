@@ -13,6 +13,7 @@ import com.pipidu.tiny1b.core.AppVersion
 import com.pipidu.tiny1b.core.GithubRelease
 import com.pipidu.tiny1b.core.GithubReleaseParser
 import com.pipidu.tiny1b.core.OneShotGate
+import com.pipidu.tiny1b.data.AppCache
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -84,8 +85,9 @@ class AppUpdater(context: Context) {
             _status.value = UpdateStatus.Downloading(release, 0f)
             try {
                 val file = withContext(Dispatchers.IO) {
-                    val dir = File(appContext.cacheDir, "updates").apply { mkdirs() }
+                    val dir = AppCache.updatesDir(appContext).apply { mkdirs() }
                     val dest = File(dir, "TINY1-B-${release.version}.apk")
+                    pruneUpdates(keep = dest, alsoKeepPart = true)
                     if (dest.exists() && dest.length() > 64 &&
                         (release.sizeBytes <= 0L || dest.length() == release.sizeBytes)
                     ) {
@@ -95,6 +97,7 @@ class AppUpdater(context: Context) {
                         val p = if (total > 0) (read.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
                         _status.value = UpdateStatus.Downloading(release, p)
                     }
+                    pruneUpdates(keep = dest, alsoKeepPart = false)
                     dest
                 }
                 if (canInstall()) {
@@ -163,6 +166,42 @@ class AppUpdater(context: Context) {
 
     fun reset() {
         _status.value = UpdateStatus.Idle
+    }
+
+    fun protectedCacheFiles(): Set<File> {
+        val dir = AppCache.updatesDir(appContext)
+        return when (val current = _status.value) {
+            is UpdateStatus.Downloading -> setOf(
+                File(dir, "TINY1-B-${current.release.version}.apk"),
+                File(dir, "TINY1-B-${current.release.version}.apk.part"),
+            )
+            else -> emptySet()
+        }
+    }
+
+    fun onDiskCacheCleared() {
+        when (val current = _status.value) {
+            is UpdateStatus.Downloading -> return
+            is UpdateStatus.Ready -> if (!current.apk.exists()) _status.value = UpdateStatus.Idle
+            is UpdateStatus.NeedsPermission -> {
+                if (current.apk == null || !current.apk.exists()) {
+                    _status.value = UpdateStatus.Idle
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun pruneUpdates(keep: File, alsoKeepPart: Boolean) {
+        val dir = keep.parentFile ?: return
+        val keepCanon = runCatching { keep.canonicalFile }.getOrDefault(keep)
+        val partCanon = runCatching { File(keep.path + ".part").canonicalFile }.getOrNull()
+        dir.listFiles()?.forEach { child ->
+            val canon = runCatching { child.canonicalFile }.getOrDefault(child)
+            if (canon == keepCanon) return@forEach
+            if (alsoKeepPart && partCanon != null && canon == partCanon) return@forEach
+            child.delete()
+        }
     }
 
     private fun httpGet(url: String): String {

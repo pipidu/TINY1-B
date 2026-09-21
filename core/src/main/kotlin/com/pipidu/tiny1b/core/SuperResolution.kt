@@ -15,6 +15,38 @@ data class RenderedFrame(
 )
 
 /**
+ * Reusable ISR / palette working set. Live path holds one instance so 4×
+ * ARGB (~3 MB) and upsample planes are not allocated every native frame.
+ */
+class IspScratch {
+    var tempNorm = FloatArray(0)
+    var yNorm = FloatArray(0)
+    var denoiseY = FloatArray(0)
+    var denoiseT = FloatArray(0)
+    var blurTmp = FloatArray(0)
+    var blurY = FloatArray(0)
+    var fusedNative = FloatArray(0)
+    var fusedScaled = FloatArray(0)
+    var argb = IntArray(0)
+
+    fun native(n: Int) {
+        if (tempNorm.size == n) return
+        tempNorm = FloatArray(n)
+        yNorm = FloatArray(n)
+        denoiseY = FloatArray(n)
+        denoiseT = FloatArray(n)
+        blurTmp = FloatArray(n)
+        blurY = FloatArray(n)
+        fusedNative = FloatArray(n)
+    }
+
+    fun scaled(n: Int) {
+        if (fusedScaled.size != n) fusedScaled = FloatArray(n)
+        if (argb.size != n) argb = IntArray(n)
+    }
+}
+
+/**
  * Live ISR: fuse temperature AGC with Y detail at native resolution, then
  * bilinear-upsample (2× or 4×). The old 4×4 bicubic-per-plane path was too
  * slow for Tiny1-B's ~23 fps stream.
@@ -27,42 +59,68 @@ object SuperResolution {
         scale: IsrScale,
         palette: Palette,
         denoise: Boolean = false,
+        scratch: IspScratch? = null,
     ): RenderedFrame {
-        var tempNorm = TemperatureMaps.normalize(planes.kelvin16)
-        var yNorm = FloatArray(planes.luminance.size) { i ->
-            (planes.luminance[i] / 255f).coerceIn(0f, 1f)
+        val n = planes.pixelCount
+        val s = scratch ?: IspScratch()
+        s.native(n)
+        TemperatureMaps.normalize(planes.kelvin16, dest = s.tempNorm)
+        for (i in 0 until n) {
+            s.yNorm[i] = (planes.luminance[i] / 255f).coerceIn(0f, 1f)
         }
+        val ySrc: FloatArray
+        val tSrc: FloatArray
         if (denoise) {
-            val cleaned = Denoise.apply(yNorm, tempNorm, planes.width, planes.height)
-            yNorm = cleaned.first
-            tempNorm = cleaned.second
+            Denoise.apply(
+                s.yNorm,
+                s.tempNorm,
+                planes.width,
+                planes.height,
+                destY = s.denoiseY,
+                destT = s.denoiseT,
+            )
+            ySrc = s.denoiseY
+            tSrc = s.denoiseT
+        } else {
+            ySrc = s.yNorm
+            tSrc = s.tempNorm
         }
-        val blurY = boxBlur3(yNorm, planes.width, planes.height)
-        val fusedNative = FloatArray(tempNorm.size) { i ->
-            val detail = yNorm[i] - blurY[i]
-            (tempNorm[i] * 0.82f + yNorm[i] * 0.10f + detail * 0.55f).coerceIn(0f, 1f)
+        boxBlur3(ySrc, planes.width, planes.height, tmp = s.blurTmp, out = s.blurY)
+        for (i in 0 until n) {
+            val detail = ySrc[i] - s.blurY[i]
+            s.fusedNative[i] = (tSrc[i] * 0.82f + ySrc[i] * 0.10f + detail * 0.55f).coerceIn(0f, 1f)
         }
         val factor = scale.factor
         val fused = if (factor == 1) {
-            fusedNative
+            s.scaled(n)
+            s.fusedNative
         } else {
-            bilinearScale(fusedNative, planes.width, planes.height, factor)
+            val outN = n * factor * factor
+            s.scaled(outN)
+            bilinearScale(s.fusedNative, planes.width, planes.height, factor, dest = s.fusedScaled)
         }
         val outW = planes.width * factor
         val outH = planes.height * factor
         val lut = palette.lut
-        val argb = IntArray(fused.size) { i ->
+        val argb = s.argb
+        for (i in fused.indices) {
             val idx = (fused[i] * 255f + 0.5f).toInt().coerceIn(0, 255)
-            lut[idx]
+            argb[i] = lut[idx]
         }
         return RenderedFrame(outW, outH, argb, fused, planes)
     }
 
-    internal fun bilinearScale(src: FloatArray, width: Int, height: Int, factor: Int): FloatArray {
+    internal fun bilinearScale(
+        src: FloatArray,
+        width: Int,
+        height: Int,
+        factor: Int,
+        dest: FloatArray? = null,
+    ): FloatArray {
         require(factor >= 2)
         val nw = width * factor
         val nh = height * factor
-        val dst = FloatArray(nw * nh)
+        val dst = if (dest != null && dest.size == nw * nh) dest else FloatArray(nw * nh)
         val inv = 1f / factor
         for (y in 0 until nh) {
             val fy = (y + 0.5f) * inv - 0.5f
@@ -89,9 +147,15 @@ object SuperResolution {
         return dst
     }
 
-    internal fun boxBlur3(src: FloatArray, w: Int, h: Int): FloatArray {
-        val tmp = FloatArray(src.size)
-        val out = FloatArray(src.size)
+    internal fun boxBlur3(
+        src: FloatArray,
+        w: Int,
+        h: Int,
+        tmp: FloatArray? = null,
+        out: FloatArray? = null,
+    ): FloatArray {
+        val tmpBuf = if (tmp != null && tmp.size == src.size) tmp else FloatArray(src.size)
+        val dest = if (out != null && out.size == src.size) out else FloatArray(src.size)
         for (y in 0 until h) {
             val row = y * w
             for (x in 0 until w) {
@@ -103,7 +167,7 @@ object SuperResolution {
                     acc += src[row + xx]
                     n++
                 }
-                tmp[row + x] = acc / n
+                tmpBuf[row + x] = acc / n
             }
         }
         for (y in 0 until h) {
@@ -113,12 +177,12 @@ object SuperResolution {
                 var acc = 0f
                 var n = 0
                 for (yy in y0..y1) {
-                    acc += tmp[yy * w + x]
+                    acc += tmpBuf[yy * w + x]
                     n++
                 }
-                out[y * w + x] = acc / n
+                dest[y * w + x] = acc / n
             }
         }
-        return out
+        return dest
     }
 }

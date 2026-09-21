@@ -32,4 +32,6 @@ fun shutterLabel(seconds: Int): String = "${seconds}s"
 fun isLiveLike(status: DeviceStatus): Boolean =
     status == DeviceStatus.Live || status == DeviceStatus.Sample
 
+fun isHardwareLive(status: DeviceStatus): Boolean = status == DeviceStatus.Live
+
 fun round1(value: Float): Float = (value * 10f).roundToInt() / 10f

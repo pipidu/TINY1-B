@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.ShutterSpeed
 import androidx.compose.material.icons.outlined.Usb
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Button
@@ -59,6 +60,7 @@ import com.pipidu.tiny1b.core.Palettes
 import com.pipidu.tiny1b.device.DeviceStatus
 import com.pipidu.tiny1b.device.EngineState
 import com.pipidu.tiny1b.ui.formatTemp
+import com.pipidu.tiny1b.ui.isHardwareLive
 import com.pipidu.tiny1b.ui.isLiveLike
 import com.pipidu.tiny1b.ui.labelZh
 import com.pipidu.tiny1b.ui.theme.Accent
@@ -87,9 +89,11 @@ fun LiveViewScreen(
     onClearPoints: () -> Unit,
     onCapturePhoto: () -> Unit,
     onToggleRecord: () -> Unit,
+    onShutter: () -> Unit,
     onStorageDenied: () -> Unit,
 ) {
     val live = isLiveLike(state.status)
+    val hardware = isHardwareLive(state.status)
     val frame = state.bitmap
     val showingImage = live && frame != null
     val withStoragePermission = rememberStorageAction(onDenied = onStorageDenied)
@@ -135,9 +139,11 @@ fun LiveViewScreen(
         BottomChrome(
             state = state,
             live = live,
+            hardware = hardware,
             showingImage = showingImage,
             onPhoto = { withStoragePermission(onCapturePhoto) },
             onRecord = { withStoragePermission(onToggleRecord) },
+            onShutter = onShutter,
             onMeasure = { onMeasureEdit(!state.measureEdit) },
             onRemoveSelected = onRemoveSelected,
             onClearPoints = onClearPoints,
@@ -249,9 +255,11 @@ private fun RecordingChip() {
 private fun BottomChrome(
     state: EngineState,
     live: Boolean,
+    hardware: Boolean,
     showingImage: Boolean,
     onPhoto: () -> Unit,
     onRecord: () -> Unit,
+    onShutter: () -> Unit,
     onMeasure: () -> Unit,
     onRemoveSelected: () -> Unit,
     onClearPoints: () -> Unit,
@@ -274,7 +282,7 @@ private fun BottomChrome(
         if (!hint.isNullOrBlank()) {
             CaptureHintBar(text = hint, recording = state.recording)
         }
-        if (state.measureEdit && live) {
+        if (state.measureEdit && hardware) {
             MeasureHintBar(
                 count = state.userPointCount,
                 onRemoveSelected = onRemoveSelected,
@@ -286,6 +294,7 @@ private fun BottomChrome(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            DockItem("快门", Icons.Outlined.ShutterSpeed, enabled = hardware, onClick = onShutter)
             DockItem("拍照", Icons.Outlined.PhotoCamera, enabled = live, onClick = onPhoto)
             DockItem(
                 if (state.recording) "停止" else "录像",
@@ -294,7 +303,13 @@ private fun BottomChrome(
                 enabled = live,
                 onClick = onRecord,
             )
-            DockItem("测温", Icons.Outlined.MyLocation, active = state.measureEdit, onClick = onMeasure)
+            DockItem(
+                "测温",
+                Icons.Outlined.MyLocation,
+                active = state.measureEdit && hardware,
+                enabled = hardware,
+                onClick = onMeasure,
+            )
         }
     }
 }
@@ -341,7 +356,7 @@ private fun DockItem(
             .clip(RoundedCornerShape(16.dp))
             .background(if (active) AccentSoft else Color.Transparent)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 6.dp),
+            .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
         Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
         Spacer(Modifier.height(4.dp))
@@ -469,7 +484,7 @@ private fun ConnectPanel(
         }
         Spacer(Modifier.height(20.dp))
         Text(
-            "也可在设置中打开「样例画面」预览色板与测温，无需模组。",
+            "也可在设置中打开「样例画面」预览色板，无需模组。快门和测温需要连接 Tiny1-B。",
             color = Muted,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,

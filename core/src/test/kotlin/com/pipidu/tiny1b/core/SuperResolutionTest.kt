@@ -39,6 +39,19 @@ class SuperResolutionTest {
     }
 
     @Test
+    fun scratchReusesArgbAcrossFrames() {
+        val planes = FrameParser.parseUvcFrame(SyntheticScene.uvcFrame())
+        val scratch = IspScratch()
+        val a = SuperResolution.enhance(planes, IsrScale.X2, Palettes.get(PaletteId.IRONBOW), scratch = scratch)
+        val argb = a.argb
+        val fused = a.fused
+        val b = SuperResolution.enhance(planes, IsrScale.X2, Palettes.get(PaletteId.IRONBOW), scratch = scratch)
+        assertTrue(argb === b.argb)
+        assertTrue(fused === b.fused)
+        assertEquals(planes.width * 2, b.width)
+    }
+
+    @Test
     fun kelvin16ConvertsAroundRoomTemp() {
         val raw = Tiny1BFormat.kelvin16FromCelsius(25f)
         val back = Tiny1BFormat.celsiusFromKelvin16(raw)

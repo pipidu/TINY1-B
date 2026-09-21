@@ -2,6 +2,7 @@ package com.pipidu.tiny1b.data
 
 import android.content.Context
 import com.pipidu.tiny1b.core.DisplayRotation
+import com.pipidu.tiny1b.core.FrameGenScale
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 
@@ -48,6 +49,10 @@ class AppSettings(context: Context) {
         get() = DisplayRotation.entries.getOrElse(prefs.getInt(KEY_ROTATION, 0)) { DisplayRotation.DEG_0 }
         set(value) { prefs.edit().putInt(KEY_ROTATION, value.ordinal).apply() }
 
+    var frameGenScale: FrameGenScale
+        get() = FrameGenScale.entries.getOrElse(prefs.getInt(KEY_FRAME_GEN, 0)) { FrameGenScale.OFF }
+        set(value) { prefs.edit().putInt(KEY_FRAME_GEN, value.ordinal).apply() }
+
     companion object {
         private const val KEY_PALETTE = "palette"
         private const val KEY_ISR = "isr"
@@ -59,5 +64,6 @@ class AppSettings(context: Context) {
         private const val KEY_SHUTTER = "shutter_max"
         private const val KEY_DENOISE = "denoise"
         private const val KEY_ROTATION = "rotation"
+        private const val KEY_FRAME_GEN = "frame_gen"
     }
 }

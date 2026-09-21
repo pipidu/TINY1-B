@@ -28,6 +28,7 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
                 currentVersionCode = viewModel.currentVersionCode,
                 onBack = { showSettings = false },
                 onIsr = viewModel::setIsr,
+                onFrameGen = viewModel::setFrameGen,
                 onShowCenter = viewModel::setShowCenter,
                 onShowMinMax = viewModel::setShowMinMax,
                 onMirror = viewModel::setMirror,
@@ -43,6 +44,7 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
                 onDownloadUpdate = viewModel::downloadUpdate,
                 onInstallPermission = viewModel::installPermissionIntent,
                 onInstall = viewModel::installIntent,
+                onClearCache = viewModel::clearCache,
             )
         } else {
             LiveViewScreen(
@@ -58,6 +60,7 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
                 onClearPoints = viewModel::clearUserPoints,
                 onCapturePhoto = viewModel::capturePhoto,
                 onToggleRecord = viewModel::toggleRecord,
+                onShutter = viewModel::shutter,
                 onStorageDenied = viewModel::onStorageDenied,
             )
         }
