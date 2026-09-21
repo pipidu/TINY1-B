@@ -12,7 +12,7 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-On `main`: Compose app, **light UI** (paper surfaces, dark text, blue accent), USB session, ISR, display denoise (default off), palettes, min/max + center + user points, in-app GitHub update. Connect path is **crash-survivable** (Java/JNI exceptions become a Chinese error card). No vendor demo tree in git.
+On `main`: Compose app, **light UI**, USB session, ISR, display denoise (default off), palettes, min/max + center + user points, in-app GitHub update. Connect is crash-survivable. USB 被拒 is shown **only after the user refuses the system dialog**. No vendor demo tree in git.
 
 ## Current architecture
 
@@ -26,6 +26,8 @@ keystore/ Project signing key (required so later APKs overwrite the same install
 - `LiveViewScreen` is connect-or-live: empty/permission/error cards, thermal stage, palettes, measurement dock.
 - `SettingsScreen` covers ISR, 降噪, min/max, center, shutter, KB cal, sample preview, **检查更新**.
 - `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated).
+
+USB permission: `UsbManager.requestPermission` uses an **explicit** PendingIntent to `UsbPermissionReceiver` (manifest, `exported=false`). Request only while the activity is **resumed**. Instant `granted=false` without `EXTRA_PERMISSION_GRANTED` or while not resumed is **not** shown as 被拒 — that was the 1.0.1 fake-denied bug. 被拒 only after the user actually refuses the system dialog.
 
 ## UI theme
 
@@ -58,8 +60,18 @@ User report: plugging Tiny1-B caused 闪退. Root causes in code (not hardware-r
 2. **Activity.onStop during the system USB dialog** — old code called `engine.stop()`, which unregistered receivers and closed the fd while the user was granting permission. Fix: do **not** stop the engine in `onStop`/`onPause`. `start()` is idempotent; `stop()` only in `onDestroy` when `isFinishing`.
 3. **USB_DEVICE_ATTACHED second Activity** — default launchMode spawned another `MainActivity` sharing the Application-scoped engine. Fix: `android:launchMode="singleTask"` + `onNewIntent`.
 4. **FileDescriptor lifetime** — closing `UsbDeviceConnection` while `libUVCCamera` still holds the fd, or passing `fd<=0` into `nativeConnect`, native-SIGSEGVs. Fix: validate fd>0; `nativeRelease`/`nativeDestroy` **before** `connection.close()`; reuse an already-open connection.
-5. **Attach receiver flags** — `RECEIVER_NOT_EXPORTED` drops system USB attach/detach. Attach receiver is `RECEIVER_EXPORTED`; permission receiver stays not-exported.
-6. **JNI / worker exceptions** — `UVCCamera` native calls, `onFrame`, ISP worker, and control transfers are try/caught. Connect runs on `tiny1b-connect` under a mutex. Failures set `DeviceStatus.Error` with a Chinese `errorMessage` instead of dying. Non-main uncaught Java exceptions are swallowed after updating the error card (native SIGSEGV still cannot be recovered).
+5. Attach receiver flags — `RECEIVER_NOT_EXPORTED` drops system USB attach/detach. Attach receiver is `RECEIVER_EXPORTED`.
+6. JNI / worker exceptions — `UVCCamera` native calls, `onFrame`, ISP worker, and control transfers are try/caught. Connect runs on `tiny1b-connect` under a mutex. Failures set `DeviceStatus.Error` with a Chinese `errorMessage` instead of dying. Non-main uncaught Java exceptions are swallowed after updating the error card (native SIGSEGV still cannot be recovered).
+
+## USB permission (do not show 被拒 without a dialog)
+
+1.0.1 showed **USB 权限被拒** without ever popping the system prompt. Causes:
+
+- `requestPermission` ran from `onCreate`/`onStart` while the activity was not resumed. UsbManager then sends `EXTRA_PERMISSION_GRANTED=false` **without a dialog**.
+- PendingIntent used `setPackage` + pre-filled `EXTRA_DEVICE` + a dynamically registered `RECEIVER_NOT_EXPORTED`. On Android 14+ the fill-in extras can be dropped; `getBooleanExtra(..., false)` then looks like a user refusal.
+- The grant path never ran because that fake-false result set `PermissionDenied` first.
+
+Fix: explicit-component PI to `UsbPermissionReceiver`; no extras on the request Intent; request only when resumed; ignore results that lack the grant extra or arrive while paused. VID `0x0BDA` / PID `0x3901` unchanged.
 
 ## ISR
 

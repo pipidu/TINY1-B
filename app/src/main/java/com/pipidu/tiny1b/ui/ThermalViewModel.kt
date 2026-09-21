@@ -55,7 +55,11 @@ class ThermalViewModel(
     fun downloadUpdate() = viewModelScope.launch { updater.download() }
     fun installPermissionIntent() = updater.installPermissionIntent()
     fun installIntent() = updater.installIntent()
-    fun onHostResumed() = updater.onInstallPermissionResult()
+    fun onHostResumed() {
+        engine.onActivityResumed()
+        updater.onInstallPermissionResult()
+    }
+    fun onHostPaused() = engine.onActivityPaused()
 
     companion object {
         fun factory(container: AppContainer): ViewModelProvider.Factory =

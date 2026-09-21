@@ -31,21 +31,28 @@ class MainActivity : ComponentActivity() {
                 Tiny1BRoot(viewModel = viewModel)
             }
         }
-        viewModel.start()
-        handleUsbIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        viewModel.start()
         handleUsbIntent(intent)
     }
 
     override fun onStart() {
         super.onStart()
         viewModel.start()
+    }
+
+    override fun onResume() {
+        super.onResume()
         viewModel.onHostResumed()
+        handleUsbIntent(intent)
+    }
+
+    override fun onPause() {
+        viewModel.onHostPaused()
+        super.onPause()
     }
 
     override fun onDestroy() {

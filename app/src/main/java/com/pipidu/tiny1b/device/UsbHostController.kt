@@ -22,27 +22,15 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     @Volatile var lastPermissionDenied: Boolean = false
         private set
 
-    var onPermissionResult: ((granted: Boolean) -> Unit)? = null
     var onAttach: (() -> Unit)? = null
     var onDetach: (() -> Unit)? = null
 
-    private val permissionFilter = IntentFilter(ACTION_USB_PERMISSION)
     private val attachFilter = IntentFilter().apply {
         addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
         addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
     }
 
-    @Volatile private var permissionRegistered = false
     @Volatile private var attachRegistered = false
-
-    private val permissionReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action != ACTION_USB_PERMISSION) return
-            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-            lastPermissionDenied = !granted
-            onPermissionResult?.invoke(granted)
-        }
-    }
 
     private val attachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -64,10 +52,6 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     }
 
     fun register() {
-        if (!permissionRegistered) {
-            registerInternal(permissionReceiver, permissionFilter, exported = false)
-            permissionRegistered = true
-        }
         if (!attachRegistered) {
             // USB attach/detach are system broadcasts and must be exported.
             registerInternal(attachReceiver, attachFilter, exported = true)
@@ -76,10 +60,6 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     }
 
     fun unregister() {
-        if (permissionRegistered) {
-            runCatching { appContext.unregisterReceiver(permissionReceiver) }
-            permissionRegistered = false
-        }
         if (attachRegistered) {
             runCatching { appContext.unregisterReceiver(attachReceiver) }
             attachRegistered = false
@@ -96,27 +76,35 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
 
     fun hasPermission(usbDevice: UsbDevice): Boolean = usbManager.hasPermission(usbDevice)
 
+    fun markDenied() {
+        lastPermissionDenied = true
+    }
+
+    fun clearDenied() {
+        lastPermissionDenied = false
+    }
+
     /**
-     * Ask for USB permission. Returns a Chinese error string if the request itself
-     * failed (typical: targetSdk 34+ implicit FLAG_MUTABLE PendingIntent).
+     * Ask for USB permission. The PendingIntent targets [UsbPermissionReceiver]
+     * explicitly (component + action, no extras) so UsbManager can fill in
+     * EXTRA_PERMISSION_GRANTED. Returns a Chinese error if the request itself failed.
      */
     fun requestPermission(usbDevice: UsbDevice): String? {
         return try {
-            val intent = Intent(ACTION_USB_PERMISSION).apply {
-                setPackage(appContext.packageName)
-                putExtra(UsbManager.EXTRA_DEVICE, usbDevice)
+            val intent = Intent(appContext, UsbPermissionReceiver::class.java).apply {
+                action = ACTION_USB_PERMISSION
             }
             val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             } else {
                 PendingIntent.FLAG_UPDATE_CURRENT
             }
-            val pi = PendingIntent.getBroadcast(appContext, 0, intent, flags)
+            val pi = PendingIntent.getBroadcast(appContext, REQUEST_CODE, intent, flags)
             usbManager.requestPermission(usbDevice, pi)
+            Log.i(TAG, "requestPermission issued for vid=${usbDevice.vendorId} pid=${usbDevice.productId}")
             null
         } catch (error: Throwable) {
             Log.e(TAG, "requestPermission", error)
-            lastPermissionDenied = true
             "无法弹出 USB 授权（${error.javaClass.simpleName}）。请拔掉后重新插入模组。"
         }
     }
@@ -212,6 +200,7 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
 
     companion object {
         const val ACTION_USB_PERMISSION = "com.pipidu.tiny1b.USB_PERMISSION"
+        private const val REQUEST_CODE = 0x71B1
         private const val TAG = "UsbHostController"
     }
 }

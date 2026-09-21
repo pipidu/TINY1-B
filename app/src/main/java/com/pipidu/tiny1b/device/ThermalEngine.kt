@@ -69,6 +69,8 @@ class ThermalEngine(
     private val uvc = UVCCamera(Tiny1BFormat.UVC_WIDTH, Tiny1BFormat.UVC_HEIGHT)
     private val running = AtomicBoolean(false)
     private val connecting = AtomicBoolean(false)
+    private val activityResumed = AtomicBoolean(false)
+    private val permissionRequestInFlight = AtomicBoolean(false)
     private val latestFrame = AtomicReference<ByteArray?>()
     private val frameLock = Object()
     private val connectLock = Any()
@@ -96,19 +98,6 @@ class ThermalEngine(
     init {
         measurement.showCenter = settings.showCenter
         measurement.showMinMax = settings.showMinMax
-        host.onPermissionResult = { granted ->
-            if (granted) {
-                connectIfPresent()
-            } else {
-                _state.update {
-                    it.copy(
-                        status = DeviceStatus.PermissionDenied,
-                        statusDetail = "已拒绝 USB 权限",
-                        errorMessage = "请重新插入模组，并在系统弹窗中选择「允许」。",
-                    )
-                }
-            }
-        }
         host.onAttach = { connectIfPresent() }
         host.onDetach = {
             synchronized(connectLock) { disconnectLocked() }
@@ -162,6 +151,48 @@ class ThermalEngine(
 
     fun retryConnect() = connectIfPresent()
 
+    fun onActivityResumed() {
+        activityResumed.set(true)
+        if (running.get()) connectIfPresent()
+    }
+
+    fun onActivityPaused() {
+        activityResumed.set(false)
+    }
+
+    /**
+     * Only treat a false result as 被拒 when the activity was in the foreground so a
+     * system dialog could actually have been shown. Background/instant denials are
+     * retried on the next resume.
+     */
+    fun onUsbPermissionResult(granted: Boolean) {
+        permissionRequestInFlight.set(false)
+        if (granted) {
+            host.clearDenied()
+            connectIfPresent()
+            return
+        }
+        if (!activityResumed.get()) {
+            Log.w(TAG, "ignoring USB permission denied while not resumed (no dialog)")
+            _state.update {
+                it.copy(
+                    status = DeviceStatus.PermissionNeeded,
+                    statusDetail = "等待 USB 授权",
+                    errorMessage = "请将应用保持在前台，系统会弹出 USB 授权窗口。",
+                )
+            }
+            return
+        }
+        host.markDenied()
+        _state.update {
+            it.copy(
+                status = DeviceStatus.PermissionDenied,
+                statusDetail = "已拒绝 USB 权限",
+                errorMessage = "你刚才拒绝了 USB 权限。请点「授权 USB」并在系统弹窗中选择「允许」。",
+            )
+        }
+    }
+
     fun onUncaught(thread: Thread, error: Throwable) {
         Log.e(TAG, "uncaught on ${thread.name}", error)
         if (_state.value.status == DeviceStatus.Connecting || _state.value.status == DeviceStatus.Live) {
@@ -170,14 +201,58 @@ class ThermalEngine(
     }
 
     fun requestUsbPermission() {
-        val device = host.findTiny1B() ?: return
+        promptUsbPermission(force = true)
+    }
+
+    private fun promptUsbPermission(force: Boolean) {
+        val device = host.findTiny1B()
+        if (device == null) {
+            _state.update {
+                it.copy(
+                    status = DeviceStatus.Searching,
+                    statusDetail = "未检测到 Tiny1-B",
+                    errorMessage = null,
+                )
+            }
+            return
+        }
+        if (host.hasPermission(device)) {
+            connectIfPresent()
+            return
+        }
+        if (!activityResumed.get() && !force) {
+            _state.update {
+                it.copy(
+                    status = DeviceStatus.PermissionNeeded,
+                    statusDetail = "需要 USB 权限",
+                    errorMessage = "请将应用保持在前台，系统会弹出 USB 授权窗口。",
+                )
+            }
+            return
+        }
+        if (permissionRequestInFlight.get() && !force) {
+            _state.update {
+                it.copy(
+                    status = DeviceStatus.PermissionNeeded,
+                    statusDetail = "等待 USB 授权",
+                    errorMessage = "系统将弹出授权窗口，请选择「允许」。",
+                )
+            }
+            return
+        }
+        permissionRequestInFlight.set(true)
         val error = host.requestPermission(device)
         if (error != null) {
+            permissionRequestInFlight.set(false)
             failConnect(error)
             return
         }
         _state.update {
-            it.copy(status = DeviceStatus.PermissionNeeded, statusDetail = "等待 USB 授权", errorMessage = null)
+            it.copy(
+                status = DeviceStatus.PermissionNeeded,
+                statusDetail = "等待 USB 授权",
+                errorMessage = "系统将弹出授权窗口，请选择「允许」，否则无法取流。",
+            )
         }
     }
 
@@ -325,18 +400,7 @@ class ThermalEngine(
             return
         }
         if (!host.hasPermission(device)) {
-            val error = host.requestPermission(device)
-            if (error != null) {
-                failConnect(error)
-                return
-            }
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.PermissionNeeded,
-                    statusDetail = "需要 USB 权限",
-                    errorMessage = "系统将弹出授权窗口，请选择「允许」，否则无法取流。",
-                )
-            }
+            promptUsbPermission(force = false)
             return
         }
         synchronized(connectLock) {

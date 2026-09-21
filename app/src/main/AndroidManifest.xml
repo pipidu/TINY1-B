@@ -35,6 +35,10 @@
                 android:resource="@xml/device_filter" />
         </activity>
 
+        <receiver
+            android:name=".device.UsbPermissionReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="com.pipidu.tiny1b.fileprovider"
