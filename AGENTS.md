@@ -12,7 +12,7 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-On `main`: Compose app, USB session, ISR, display denoise (default off), palettes, min/max + center + user points, **in-app GitHub update**. No vendor demo tree in git.
+On `main`: Compose app, USB session, ISR, display denoise (default off), palettes, min/max + center + user points, in-app GitHub update. Connect path is **crash-survivable** (Java/JNI exceptions become a Chinese error card). No vendor demo tree in git.
 
 ## Current architecture
 
@@ -34,6 +34,17 @@ keystore/ Project signing key (required so later APKs overwrite the same install
 3. Preview size **256×384** YUYV. Each frame is split: **256×192** image + **256×192** Kelvin-16 temperature, then rotated 90° CCW to **192×256** portrait (`FrameParser`).
 4. Temperature: `°C = raw/16 − 273.15`.
 5. Control transfers (`Tiny1BCommands`): manual shutter `0x0345`, KB cal `0x0341`, shutter max get `0x038A` / set `0x03C4`.
+
+## Connect crash survivability
+
+User report: plugging Tiny1-B caused 闪退. Root causes in code (not hardware-reproduced here):
+
+1. **USB permission PendingIntent** — targetSdk 35 + `FLAG_MUTABLE` on an implicit broadcast throws `IllegalArgumentException`. Fix: `Intent.setPackage(applicationId)` so the PI is explicit; catch request failures.
+2. **Activity.onStop during the system USB dialog** — old code called `engine.stop()`, which unregistered receivers and closed the fd while the user was granting permission. Fix: do **not** stop the engine in `onStop`/`onPause`. `start()` is idempotent; `stop()` only in `onDestroy` when `isFinishing`.
+3. **USB_DEVICE_ATTACHED second Activity** — default launchMode spawned another `MainActivity` sharing the Application-scoped engine. Fix: `android:launchMode="singleTask"` + `onNewIntent`.
+4. **FileDescriptor lifetime** — closing `UsbDeviceConnection` while `libUVCCamera` still holds the fd, or passing `fd<=0` into `nativeConnect`, native-SIGSEGVs. Fix: validate fd>0; `nativeRelease`/`nativeDestroy` **before** `connection.close()`; reuse an already-open connection.
+5. **Attach receiver flags** — `RECEIVER_NOT_EXPORTED` drops system USB attach/detach. Attach receiver is `RECEIVER_EXPORTED`; permission receiver stays not-exported.
+6. **JNI / worker exceptions** — `UVCCamera` native calls, `onFrame`, ISP worker, and control transfers are try/caught. Connect runs on `tiny1b-connect` under a mutex. Failures set `DeviceStatus.Error` with a Chinese `errorMessage` instead of dying. Non-main uncaught Java exceptions are swallowed after updating the error card (native SIGSEGV still cannot be recovered).
 
 ## ISR
 
@@ -110,8 +121,8 @@ Optional: 设置 → 样例画面, to exercise palettes/ISR/points without hardw
 
 ## Hardware-only gaps
 
-- Real Tiny1-B USB attach, permission, UVC stream, shutter click, and KB cal cannot be verified in this environment.
-- Only `arm64-v8a` vendor JNI is available.
+- Real Tiny1-B USB attach, permission, UVC stream, shutter click, and KB cal cannot be verified in this environment. Connect crashes were reproduced from code paths (permission PI, lifecycle, fd, JNI) rather than a physical module.
+- Only `arm64-v8a` vendor JNI is available. Native SIGSEGV inside `libUVCCamera` cannot be caught in Java.
 - In-app install of a downloaded APK needs a physical device + unknown-sources permission.
 
 ## Process

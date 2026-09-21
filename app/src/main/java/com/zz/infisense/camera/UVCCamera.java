@@ -5,8 +5,8 @@ import android.util.Log;
 
 /**
  * JNI bindings for Infiray Tiny1-B UVC capture ({@code libUVCCamera.so}).
- * Native registration is hard-coded to this class name; do not rename or move it.
- * USB host open/permission lives in the product {@code UsbHostController}, not here.
+ * Package name is fixed by the native library. All native calls are guarded so a
+ * failure becomes a Java error instead of taking down the process when possible.
  */
 public class UVCCamera {
     private static final String TAG = "UVCCamera";
@@ -29,6 +29,7 @@ public class UVCCamera {
 
     private static boolean librariesLoaded;
     private static boolean librariesFailed;
+    private static String loadError;
 
     static {
         try {
@@ -39,12 +40,21 @@ public class UVCCamera {
             librariesLoaded = true;
         } catch (UnsatisfiedLinkError error) {
             librariesFailed = true;
+            loadError = error.getMessage();
             Log.e(TAG, "Tiny1-B JNI libraries failed to load (arm64 required)", error);
+        } catch (Throwable error) {
+            librariesFailed = true;
+            loadError = error.getMessage();
+            Log.e(TAG, "Tiny1-B JNI init failed", error);
         }
     }
 
     public static boolean areLibrariesLoaded() {
         return librariesLoaded && !librariesFailed;
+    }
+
+    public static String getLoadError() {
+        return loadError;
     }
 
     private long nativePtr;
@@ -58,65 +68,106 @@ public class UVCCamera {
 
     public synchronized void create() {
         if (!areLibrariesLoaded()) {
-            throw new IllegalStateException("Tiny1-B JNI not loaded");
+            throw new IllegalStateException(
+                    loadError != null ? loadError : "Tiny1-B JNI 未加载，请使用 ARM64 真机");
         }
         if (nativePtr == 0) {
             nativePtr = nativeCreate();
         }
+        if (nativePtr == 0) {
+            throw new IllegalStateException("nativeCreate 返回空指针");
+        }
     }
 
     public synchronized boolean connect(UsbHost host) {
-        if (nativePtr == 0 || host == null || !host.isOpen()) {
+        try {
+            if (nativePtr == 0 || host == null || !host.isOpen()) {
+                return false;
+            }
+            int fd = host.getFileDescriptor();
+            if (fd <= 0) {
+                Log.e(TAG, "connect: invalid file descriptor " + fd);
+                return false;
+            }
+            String usbfs = usbfsPath(host.getDeviceName());
+            int result = nativeConnect(
+                    nativePtr,
+                    host.getVendorId(),
+                    host.getProductId(),
+                    fd,
+                    host.getBusNum(),
+                    host.getDevNum(),
+                    usbfs
+            );
+            if (result != 0) {
+                Log.e(TAG, "nativeConnect failed: " + result);
+                return false;
+            }
+            int sizeResult = nativeSetPreviewSize(
+                    nativePtr,
+                    previewWidth,
+                    previewHeight,
+                    DEFAULT_PREVIEW_MIN_FPS,
+                    DEFAULT_PREVIEW_MAX_FPS,
+                    FRAME_FORMAT_YUYV,
+                    DEFAULT_BANDWIDTH
+            );
+            if (sizeResult != 0) {
+                Log.e(TAG, "nativeSetPreviewSize failed: " + sizeResult);
+                return false;
+            }
+            return true;
+        } catch (Throwable error) {
+            Log.e(TAG, "connect threw", error);
             return false;
         }
-        int result = nativeConnect(
-                nativePtr,
-                host.getVendorId(),
-                host.getProductId(),
-                host.getFileDescriptor(),
-                host.getBusNum(),
-                host.getDevNum(),
-                usbfsPath(host.getDeviceName())
-        );
-        if (result != 0) {
-            Log.e(TAG, "nativeConnect failed: " + result);
-            return false;
-        }
-        nativeSetPreviewSize(
-                nativePtr,
-                previewWidth,
-                previewHeight,
-                DEFAULT_PREVIEW_MIN_FPS,
-                DEFAULT_PREVIEW_MAX_FPS,
-                FRAME_FORMAT_YUYV,
-                DEFAULT_BANDWIDTH
-        );
-        return true;
     }
 
     public synchronized void setFrameCallback(IFrameCallback callback) {
-        if (nativePtr != 0) {
-            nativeSetFrameCallback(nativePtr, callback);
+        try {
+            if (nativePtr != 0) {
+                nativeSetFrameCallback(nativePtr, callback);
+            }
+        } catch (Throwable error) {
+            Log.e(TAG, "setFrameCallback", error);
         }
     }
 
-    public synchronized void startPreview() {
-        if (nativePtr != 0) {
-            nativeStartPreview(nativePtr);
+    public synchronized boolean startPreview() {
+        try {
+            if (nativePtr == 0) {
+                return false;
+            }
+            int result = nativeStartPreview(nativePtr);
+            return result == 0;
+        } catch (Throwable error) {
+            Log.e(TAG, "startPreview", error);
+            return false;
         }
     }
 
     public synchronized void stopPreview() {
-        if (nativePtr != 0) {
-            nativeSetFrameCallback(nativePtr, null);
-            nativeStopPreview(nativePtr);
+        try {
+            if (nativePtr != 0) {
+                nativeSetFrameCallback(nativePtr, null);
+                nativeStopPreview(nativePtr);
+            }
+        } catch (Throwable error) {
+            Log.e(TAG, "stopPreview", error);
         }
     }
 
     public synchronized void release() {
-        if (nativePtr != 0) {
-            nativeRelease(nativePtr);
-            nativeDestroy(nativePtr);
+        try {
+            if (nativePtr != 0) {
+                nativeSetFrameCallback(nativePtr, null);
+                nativeStopPreview(nativePtr);
+                nativeRelease(nativePtr);
+                nativeDestroy(nativePtr);
+            }
+        } catch (Throwable error) {
+            Log.e(TAG, "release", error);
+        } finally {
             nativePtr = 0;
         }
     }
@@ -128,7 +179,8 @@ public class UVCCamera {
             for (int i = 1; i < parts.length - 2; i++) {
                 builder.append('/').append(parts[i]);
             }
-            return builder.toString();
+            String path = builder.toString();
+            return TextUtils.isEmpty(path) ? DEFAULT_USBFS : path;
         }
         return DEFAULT_USBFS;
     }

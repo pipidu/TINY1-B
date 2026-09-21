@@ -2,6 +2,7 @@ package com.pipidu.tiny1b.device
 
 import android.graphics.Bitmap
 import android.os.SystemClock
+import android.util.Log
 import com.pipidu.tiny1b.core.FrameParser
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.MeasurementModel
@@ -67,11 +68,13 @@ class ThermalEngine(
 
     private val uvc = UVCCamera(Tiny1BFormat.UVC_WIDTH, Tiny1BFormat.UVC_HEIGHT)
     private val running = AtomicBoolean(false)
+    private val connecting = AtomicBoolean(false)
     private val latestFrame = AtomicReference<ByteArray?>()
     private val frameLock = Object()
+    private val connectLock = Any()
     private var worker: Thread? = null
     private var sampleThread: Thread? = null
-    private var previewing = false
+    @Volatile private var previewing = false
     private var frames = 0
     private var fpsWindowStart = 0L
     private var displayedFps = 0
@@ -80,9 +83,13 @@ class ThermalEngine(
     val state: StateFlow<EngineState> = _state.asStateFlow()
 
     private val frameCallback = IFrameCallback { frame ->
-        if (frame != null && frame.size >= Tiny1BFormat.UVC_FRAME_BYTES) {
-            latestFrame.set(frame.copyOf())
-            synchronized(frameLock) { frameLock.notify() }
+        try {
+            if (frame != null && frame.size >= Tiny1BFormat.UVC_FRAME_BYTES) {
+                latestFrame.set(frame.copyOf())
+                synchronized(frameLock) { frameLock.notify() }
+            }
+        } catch (error: Throwable) {
+            Log.e(TAG, "onFrame", error)
         }
     }
 
@@ -90,20 +97,27 @@ class ThermalEngine(
         measurement.showCenter = settings.showCenter
         measurement.showMinMax = settings.showMinMax
         host.onPermissionResult = { granted ->
-            if (granted) connectIfPresent() else {
+            if (granted) {
+                connectIfPresent()
+            } else {
                 _state.update {
-                    it.copy(status = DeviceStatus.PermissionDenied, statusDetail = "已拒绝 USB 权限")
+                    it.copy(
+                        status = DeviceStatus.PermissionDenied,
+                        statusDetail = "已拒绝 USB 权限",
+                        errorMessage = "请重新插入模组，并在系统弹窗中选择「允许」。",
+                    )
                 }
             }
         }
         host.onAttach = { connectIfPresent() }
         host.onDetach = {
-            stopPreview()
+            synchronized(connectLock) { disconnectLocked() }
             _state.update {
                 it.copy(
                     status = DeviceStatus.Searching,
                     statusDetail = "模组已断开",
                     bitmap = null,
+                    errorMessage = null,
                 )
             }
             if (settings.samplePreview) startSample()
@@ -111,14 +125,20 @@ class ThermalEngine(
     }
 
     fun start() {
-        if (running.getAndSet(true)) return
+        if (running.getAndSet(true)) {
+            host.register()
+            if (_state.value.status != DeviceStatus.Live) connectIfPresent()
+            return
+        }
         host.register()
         startWorker()
         if (!UVCCamera.areLibrariesLoaded()) {
+            val detail = UVCCamera.getLoadError()?.let { "当前系统无法加载 Tiny1-B 原生库：$it" }
+                ?: "当前系统无法加载 Tiny1-B 原生库，请使用 ARM64 真机。"
             _state.update {
                 it.copy(
                     status = DeviceStatus.JniUnavailable,
-                    errorMessage = "当前系统无法加载 Tiny1-B 原生库，请使用 ARM64 真机。",
+                    errorMessage = detail,
                 )
             }
             if (settings.samplePreview) startSample()
@@ -132,10 +152,9 @@ class ThermalEngine(
 
     fun stop() {
         running.set(false)
-        stopPreview()
+        synchronized(connectLock) { disconnectLocked() }
         stopSample()
         host.unregister()
-        host.close()
         synchronized(frameLock) { frameLock.notifyAll() }
         worker?.join(500)
         worker = null
@@ -143,23 +162,36 @@ class ThermalEngine(
 
     fun retryConnect() = connectIfPresent()
 
+    fun onUncaught(thread: Thread, error: Throwable) {
+        Log.e(TAG, "uncaught on ${thread.name}", error)
+        if (_state.value.status == DeviceStatus.Connecting || _state.value.status == DeviceStatus.Live) {
+            failConnect("连接过程异常：${error.message ?: error.javaClass.simpleName}")
+        }
+    }
+
     fun requestUsbPermission() {
         val device = host.findTiny1B() ?: return
-        host.requestPermission(device)
-        _state.update { it.copy(status = DeviceStatus.PermissionNeeded, statusDetail = "等待 USB 授权") }
+        val error = host.requestPermission(device)
+        if (error != null) {
+            failConnect(error)
+            return
+        }
+        _state.update {
+            it.copy(status = DeviceStatus.PermissionNeeded, statusDetail = "等待 USB 授权", errorMessage = null)
+        }
     }
 
     fun shutter() {
-        host.commands()?.manualShutter()
+        runCatching { host.commands()?.manualShutter() }
     }
 
     fun setKbCalibrate(enabled: Boolean) {
-        host.commands()?.setKbCalibrate(enabled)
+        runCatching { host.commands()?.setKbCalibrate(enabled) }
     }
 
     fun applyShutterMax(seconds: Int) {
         settings.shutterMaxSeconds = seconds
-        host.commands()?.setShutterMaxTime(seconds)
+        runCatching { host.commands()?.setShutterMaxTime(seconds) }
         _state.update { it.copy(shutterMaxSeconds = seconds) }
     }
 
@@ -270,6 +302,7 @@ class ThermalEngine(
     private val sampleRunning = AtomicBoolean(false)
 
     private fun connectIfPresent() {
+        if (!running.get()) return
         stopSample()
         val device = host.findTiny1B()
         if (device == null) {
@@ -277,58 +310,128 @@ class ThermalEngine(
                 it.copy(
                     status = if (settings.samplePreview) it.status else DeviceStatus.Searching,
                     statusDetail = "未检测到 Tiny1-B",
+                    errorMessage = if (settings.samplePreview) it.errorMessage else null,
                 )
             }
             if (settings.samplePreview) startSample()
             return
         }
-        if (!host.hasPermission(device)) {
-            _state.update { it.copy(status = DeviceStatus.PermissionNeeded, statusDetail = "需要 USB 权限") }
-            host.requestPermission(device)
+        if (!UVCCamera.areLibrariesLoaded()) {
+            val detail = UVCCamera.getLoadError()?.let { "无法加载 Tiny1-B 原生库：$it" }
+                ?: "无法加载 Tiny1-B 原生库，请使用 ARM64 真机。"
+            _state.update {
+                it.copy(status = DeviceStatus.JniUnavailable, errorMessage = detail)
+            }
             return
         }
-        stopPreview()
-        _state.update { it.copy(status = DeviceStatus.Connecting, statusDetail = "正在打开模组…") }
+        if (!host.hasPermission(device)) {
+            val error = host.requestPermission(device)
+            if (error != null) {
+                failConnect(error)
+                return
+            }
+            _state.update {
+                it.copy(
+                    status = DeviceStatus.PermissionNeeded,
+                    statusDetail = "需要 USB 权限",
+                    errorMessage = "系统将弹出授权窗口，请选择「允许」，否则无法取流。",
+                )
+            }
+            return
+        }
+        synchronized(connectLock) {
+            if (previewing && _state.value.status == DeviceStatus.Live && host.isOpen()) {
+                return
+            }
+        }
+        if (!connecting.compareAndSet(false, true)) return
+        _state.update {
+            it.copy(status = DeviceStatus.Connecting, statusDetail = "正在打开模组…", errorMessage = null)
+        }
+        thread(name = "tiny1b-connect", isDaemon = true) {
+            try {
+                synchronized(connectLock) {
+                    openAndStartLocked(device)
+                }
+            } catch (error: Throwable) {
+                Log.e(TAG, "connect", error)
+                failConnect("连接失败：${error.message ?: error.javaClass.simpleName}")
+            } finally {
+                connecting.set(false)
+            }
+        }
+    }
+
+    private fun openAndStartLocked(device: android.hardware.usb.UsbDevice) {
+        if (!running.get()) return
+        if (previewing && _state.value.status == DeviceStatus.Live && host.isOpen()) return
+        disconnectLocked()
         if (!host.open(device)) {
-            _state.update { it.copy(status = DeviceStatus.Error, errorMessage = "无法打开 USB 设备") }
+            failConnectLocked("无法打开 USB 设备。请确认 OTG 已开启，并重新插拔 Tiny1-B。")
+            return
+        }
+        val fd = host.getFileDescriptor()
+        if (fd <= 0) {
+            failConnectLocked("USB 文件描述符无效（fd=$fd）。请重新插拔模组后再试。")
             return
         }
         try {
             uvc.create()
-            if (!uvc.connect(host)) {
-                _state.update { it.copy(status = DeviceStatus.Error, errorMessage = "UVC 连接失败") }
-                return
-            }
-            uvc.setFrameCallback(frameCallback)
-            uvc.startPreview()
-            previewing = true
-            host.commands()?.setShutterMaxTime(settings.shutterMaxSeconds)
-            _state.update {
-                it.copy(
-                    status = DeviceStatus.Live,
-                    statusDetail = device.deviceName,
-                    errorMessage = null,
-                )
-            }
         } catch (error: Throwable) {
-            _state.update {
-                it.copy(status = DeviceStatus.Error, errorMessage = error.message ?: "连接失败")
-            }
+            Log.e(TAG, "uvc.create", error)
+            failConnectLocked("无法创建 UVC 会话：${error.message ?: error.javaClass.simpleName}")
+            return
+        }
+        if (!uvc.connect(host)) {
+            failConnectLocked("UVC 连接失败。请确认模组为 Tiny1-B（VID 0BDA / PID 3901）且已授权。")
+            return
+        }
+        uvc.setFrameCallback(frameCallback)
+        if (!uvc.startPreview()) {
+            failConnectLocked("无法启动预览流。请重新插拔模组后再试。")
+            return
+        }
+        previewing = true
+        runCatching { host.commands()?.setShutterMaxTime(settings.shutterMaxSeconds) }
+        _state.update {
+            it.copy(
+                status = DeviceStatus.Live,
+                statusDetail = device.deviceName,
+                errorMessage = null,
+            )
         }
     }
 
-    private fun stopPreview() {
-        if (!previewing) return
-        previewing = false
-        runCatching {
-            uvc.stopPreview()
-            uvc.release()
+    private fun failConnect(message: String) {
+        synchronized(connectLock) { failConnectLocked(message) }
+    }
+
+    private fun failConnectLocked(message: String) {
+        disconnectLocked()
+        _state.update {
+            it.copy(
+                status = DeviceStatus.Error,
+                statusDetail = "连接失败",
+                errorMessage = message,
+                bitmap = null,
+            )
         }
+    }
+
+    /** Native UVC must release the fd before Java closes UsbDeviceConnection. */
+    private fun disconnectLocked() {
+        previewing = false
+        runCatching { uvc.stopPreview() }
+        runCatching { uvc.release() }
         host.close()
     }
 
     private fun startWorker() {
+        if (worker?.isAlive == true) return
         worker = thread(name = "tiny1b-isp", isDaemon = true) {
+            Thread.currentThread().uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { t, e ->
+                onUncaught(t, e)
+            }
             while (running.get()) {
                 val frame = latestFrame.getAndSet(null)
                 if (frame == null) {
@@ -339,7 +442,11 @@ class ThermalEngine(
                     }
                     continue
                 }
-                processFrame(frame)
+                try {
+                    processFrame(frame)
+                } catch (error: Throwable) {
+                    Log.e(TAG, "processFrame", error)
+                }
             }
         }
     }
@@ -348,13 +455,21 @@ class ThermalEngine(
         if (!sampleRunning.compareAndSet(false, true)) return
         sampleThread = thread(name = "tiny1b-sample", isDaemon = true) {
             var t = 0f
-            _state.update { it.copy(status = DeviceStatus.Sample, statusDetail = "样例画面（无模组）") }
+            _state.update {
+                it.copy(
+                    status = DeviceStatus.Sample,
+                    statusDetail = "样例画面（无模组）",
+                    errorMessage = null,
+                )
+            }
             try {
                 while (running.get() && sampleRunning.get() && settings.samplePreview && _state.value.status != DeviceStatus.Live) {
-                    processFrame(SyntheticScene.uvcFrame(t = t))
+                    runCatching { processFrame(SyntheticScene.uvcFrame(t = t)) }
                     t += 0.07f
                     Thread.sleep(45)
                 }
+            } catch (error: Throwable) {
+                Log.e(TAG, "sample", error)
             } finally {
                 sampleRunning.set(false)
             }
@@ -417,4 +532,8 @@ class ThermalEngine(
         denoise = settings.denoise,
         shutterMaxSeconds = settings.shutterMaxSeconds,
     )
+
+    companion object {
+        private const val TAG = "ThermalEngine"
+    }
 }

@@ -5,11 +5,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.util.Log
 import com.pipidu.tiny1b.core.Tiny1BFormat
 import com.zz.infisense.camera.UVCCamera
 
@@ -32,6 +32,9 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
         addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
     }
 
+    @Volatile private var permissionRegistered = false
+    @Volatile private var attachRegistered = false
+
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != ACTION_USB_PERMISSION) return
@@ -44,11 +47,15 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     private val attachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> onAttach?.invoke()
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                    val attached = intent.getParcelableExtraCompat<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    if (attached == null || isTiny1B(attached)) {
+                        onAttach?.invoke()
+                    }
+                }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val gone = intent.getParcelableExtraCompat<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                    if (gone != null && gone.vendorId == Tiny1BFormat.VENDOR_ID && gone.productId == Tiny1BFormat.PRODUCT_ID) {
-                        close()
+                    if (gone != null && isTiny1B(gone)) {
                         onDetach?.invoke()
                     }
                 }
@@ -57,13 +64,26 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     }
 
     fun register() {
-        registerInternal(permissionReceiver, permissionFilter)
-        registerInternal(attachReceiver, attachFilter)
+        if (!permissionRegistered) {
+            registerInternal(permissionReceiver, permissionFilter, exported = false)
+            permissionRegistered = true
+        }
+        if (!attachRegistered) {
+            // USB attach/detach are system broadcasts and must be exported.
+            registerInternal(attachReceiver, attachFilter, exported = true)
+            attachRegistered = true
+        }
     }
 
     fun unregister() {
-        runCatching { appContext.unregisterReceiver(permissionReceiver) }
-        runCatching { appContext.unregisterReceiver(attachReceiver) }
+        if (permissionRegistered) {
+            runCatching { appContext.unregisterReceiver(permissionReceiver) }
+            permissionRegistered = false
+        }
+        if (attachRegistered) {
+            runCatching { appContext.unregisterReceiver(attachReceiver) }
+            attachRegistered = false
+        }
     }
 
     fun findTiny1B(): UsbDevice? {
@@ -76,29 +96,70 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
 
     fun hasPermission(usbDevice: UsbDevice): Boolean = usbManager.hasPermission(usbDevice)
 
-    fun requestPermission(usbDevice: UsbDevice) {
-        val flags = if (Build.VERSION.SDK_INT >= 31) {
-            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
+    /**
+     * Ask for USB permission. Returns a Chinese error string if the request itself
+     * failed (typical: targetSdk 34+ implicit FLAG_MUTABLE PendingIntent).
+     */
+    fun requestPermission(usbDevice: UsbDevice): String? {
+        return try {
+            val intent = Intent(ACTION_USB_PERMISSION).apply {
+                setPackage(appContext.packageName)
+                putExtra(UsbManager.EXTRA_DEVICE, usbDevice)
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pi = PendingIntent.getBroadcast(appContext, 0, intent, flags)
+            usbManager.requestPermission(usbDevice, pi)
+            null
+        } catch (error: Throwable) {
+            Log.e(TAG, "requestPermission", error)
+            lastPermissionDenied = true
+            "无法弹出 USB 授权（${error.javaClass.simpleName}）。请拔掉后重新插入模组。"
         }
-        val pi = PendingIntent.getBroadcast(appContext, 0, Intent(ACTION_USB_PERMISSION), flags)
-        usbManager.requestPermission(usbDevice, pi)
     }
 
+    @Synchronized
     fun open(usbDevice: UsbDevice): Boolean {
-        if (!usbManager.hasPermission(usbDevice)) return false
-        val opened = usbManager.openDevice(usbDevice) ?: return false
-        device = usbDevice
-        connection = opened
-        lastPermissionDenied = false
-        return true
+        return try {
+            if (!usbManager.hasPermission(usbDevice)) return false
+            if (connection != null && device?.deviceId == usbDevice.deviceId) {
+                return fileDescriptor() > 0
+            }
+            closeConnectionOnly()
+            val opened = usbManager.openDevice(usbDevice) ?: return false
+            device = usbDevice
+            connection = opened
+            lastPermissionDenied = false
+            if (fileDescriptor() <= 0) {
+                closeConnectionOnly()
+                device = null
+                return false
+            }
+            true
+        } catch (error: Throwable) {
+            Log.e(TAG, "open", error)
+            closeConnectionOnly()
+            device = null
+            false
+        }
     }
 
+    /**
+     * Close the Java USB connection only after native UVC has released the fd.
+     */
+    @Synchronized
     fun close() {
-        connection?.close()
-        connection = null
+        closeConnectionOnly()
         device = null
+    }
+
+    @Synchronized
+    private fun closeConnectionOnly() {
+        runCatching { connection?.close() }
+        connection = null
     }
 
     fun commands(): Tiny1BCommands? {
@@ -108,11 +169,22 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
 
     override fun getVendorId(): Int = device?.vendorId ?: 0
     override fun getProductId(): Int = device?.productId ?: 0
-    override fun getFileDescriptor(): Int = connection?.fileDescriptor ?: 0
+    override fun getFileDescriptor(): Int = fileDescriptor()
     override fun getBusNum(): Int = parsePathIndex(getDeviceName(), 2)
     override fun getDevNum(): Int = parsePathIndex(getDeviceName(), 1)
-    override fun getDeviceName(): String = device?.deviceName ?: ""
-    override fun isOpen(): Boolean = connection != null
+    override fun getDeviceName(): String = device?.deviceName.orEmpty()
+    override fun isOpen(): Boolean = connection != null && fileDescriptor() > 0
+
+    private fun fileDescriptor(): Int {
+        val conn = connection ?: return 0
+        return try {
+            val fd = conn.fileDescriptor
+            if (fd > 0) fd else 0
+        } catch (error: Throwable) {
+            Log.e(TAG, "fileDescriptor", error)
+            0
+        }
+    }
 
     private fun parsePathIndex(name: String, fromEnd: Int): Int {
         val parts = name.split("/")
@@ -120,9 +192,10 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
         return parts[parts.size - fromEnd].toIntOrNull() ?: 0
     }
 
-    private fun registerInternal(receiver: BroadcastReceiver, filter: IntentFilter) {
+    private fun registerInternal(receiver: BroadcastReceiver, filter: IntentFilter, exported: Boolean) {
         if (Build.VERSION.SDK_INT >= 33) {
-            appContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            val flags = if (exported) Context.RECEIVER_EXPORTED else Context.RECEIVER_NOT_EXPORTED
+            appContext.registerReceiver(receiver, filter, flags)
         } else {
             appContext.registerReceiver(receiver, filter)
         }
@@ -139,19 +212,6 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
 
     companion object {
         const val ACTION_USB_PERMISSION = "com.pipidu.tiny1b.USB_PERMISSION"
-
-        fun hasUvcControl(usbDevice: UsbDevice): Boolean {
-            for (i in 0 until usbDevice.interfaceCount) {
-                val intf = usbDevice.getInterface(i)
-                if (intf.interfaceClass == 14 && intf.interfaceSubclass == 1) {
-                    for (e in 0 until intf.endpointCount) {
-                        if (intf.getEndpoint(e).type == UsbConstants.USB_ENDPOINT_XFER_INT) {
-                            return true
-                        }
-                    }
-                }
-            }
-            return false
-        }
+        private const val TAG = "UsbHostController"
     }
 }

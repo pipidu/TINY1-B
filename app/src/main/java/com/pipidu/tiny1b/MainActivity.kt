@@ -1,5 +1,7 @@
 package com.pipidu.tiny1b
 
+import android.content.Intent
+import android.hardware.usb.UsbManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,6 +25,15 @@ class MainActivity : ComponentActivity() {
                 Tiny1BRoot(viewModel = viewModel)
             }
         }
+        viewModel.start()
+        handleUsbIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        viewModel.start()
+        handleUsbIntent(intent)
     }
 
     override fun onStart() {
@@ -31,8 +42,16 @@ class MainActivity : ComponentActivity() {
         viewModel.onHostResumed()
     }
 
-    override fun onStop() {
-        viewModel.stop()
-        super.onStop()
+    override fun onDestroy() {
+        if (isFinishing) {
+            viewModel.stop()
+        }
+        super.onDestroy()
+    }
+
+    private fun handleUsbIntent(intent: Intent?) {
+        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+            viewModel.retry()
+        }
     }
 }
