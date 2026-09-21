@@ -12,7 +12,7 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-On `main`: Compose app, light UI, USB session **matching the Infiray demo grant path** (`targetSdk 26`, implicit Activity PendingIntent flags=0). ISR, denoise (default off), palettes, measurement, in-app GitHub update. No vendor demo tree in git.
+On `main`: Compose app, light UI, USB session, ISR, denoise (default off), palettes, measurement, in-app GitHub update. JNI wrapper exposes **`mNativePtr`** (`J`) as `libUVCCamera.so` requires. No vendor demo tree in git.
 
 ## Current architecture
 
@@ -47,10 +47,14 @@ Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on t
 ## Tiny1-B integration
 
 1. USB host matches **VID `0x0BDA` / PID `0x3901`**.
-2. After permission, `UsbHostController` opens a connection; `UVCCamera.connect` passes fd/bus/dev into `libUVCCamera`.
+2. After permission, `UsbHostController` opens a connection; `UVCCamera.connect` passes fd/bus/dev into `libUVCCamera`. Java field **`mNativePtr`** (long) is required by nativeCreate.
 3. Preview size **256×384** YUYV. Each frame is split: **256×192** image + **256×192** Kelvin-16 temperature, then rotated 90° CCW to **192×256** portrait (`FrameParser`).
 4. Temperature: `°C = raw/16 − 273.15`.
 5. Control transfers (`Tiny1BCommands`): manual shutter `0x0345`, KB cal `0x0341`, shutter max get `0x038A` / set `0x03C4`.
+
+## JNI wrapper (`com.zz.infisense.camera.UVCCamera`)
+
+`libUVCCamera.so` (`nativeCreate`) does `GetFieldID(..., "mNativePtr", "J")`. 1.0.3 used `nativePtr` → `NoSuchFieldError` / 无法创建 UVC 会话. Fields aligned with the demo wrapper: `vid`, `pid`, `openStatus`, `isLoaded`, `mCurrentWidth`, `mCurrentHeight`, **`mNativePtr`**. Do not rename `mNativePtr`. Native methods stay `nativeCreate` / `nativeConnect` / `nativeSetFrameCallback` / etc. We do **not** ship demo `UsbControlBlock` / demo `MainActivity`.
 
 ## Connect crash survivability
 

@@ -5,14 +5,18 @@ import android.util.Log;
 
 /**
  * JNI bindings for Infiray Tiny1-B UVC capture ({@code libUVCCamera.so}).
- * Package name is fixed by the native library. All native calls are guarded so a
- * failure becomes a Java error instead of taking down the process when possible.
+ * Package, native method names, and {@code mNativePtr} must match the .so
+ * (GetFieldID "mNativePtr" "J"). Field names follow the vendor demo wrapper.
  */
 public class UVCCamera {
     private static final String TAG = "UVCCamera";
     private static final String DEFAULT_USBFS = "/dev/bus/usb";
 
     public static final int FRAME_FORMAT_YUYV = 0;
+    public static final int FRAME_FORMAT_MJPEG = 1;
+    public static final int DEFAULT_PREVIEW_WIDTH = 256;
+    public static final int DEFAULT_PREVIEW_HEIGHT = 384;
+    public static final int DEFAULT_PREVIEW_MODE = FRAME_FORMAT_YUYV;
     public static final int DEFAULT_PREVIEW_MIN_FPS = 1;
     public static final int DEFAULT_PREVIEW_MAX_FPS = 31;
     public static final float DEFAULT_BANDWIDTH = 1.0f;
@@ -30,6 +34,8 @@ public class UVCCamera {
     private static boolean librariesLoaded;
     private static boolean librariesFailed;
     private static String loadError;
+    /** Same name as the demo; nativeCreate looks this up if present. */
+    private static boolean isLoaded;
 
     static {
         try {
@@ -38,6 +44,7 @@ public class UVCCamera {
             System.loadLibrary("uvc");
             System.loadLibrary("UVCCamera");
             librariesLoaded = true;
+            isLoaded = true;
         } catch (UnsatisfiedLinkError error) {
             librariesFailed = true;
             loadError = error.getMessage();
@@ -57,13 +64,18 @@ public class UVCCamera {
         return loadError;
     }
 
-    private long nativePtr;
-    private final int previewWidth;
-    private final int previewHeight;
+    // Instance field names/types match the demo UVCCamera.java the .so was built against.
+    private int vid;
+    private int pid;
+    private boolean openStatus;
+    protected int mCurrentWidth = DEFAULT_PREVIEW_WIDTH;
+    protected int mCurrentHeight = DEFAULT_PREVIEW_HEIGHT;
+    /** Native GetFieldID(UVCCamera, "mNativePtr", "J") — must not be renamed. */
+    protected long mNativePtr;
 
     public UVCCamera(int previewWidth, int previewHeight) {
-        this.previewWidth = previewWidth;
-        this.previewHeight = previewHeight;
+        this.mCurrentWidth = previewWidth;
+        this.mCurrentHeight = previewHeight;
     }
 
     public synchronized void create() {
@@ -71,17 +83,17 @@ public class UVCCamera {
             throw new IllegalStateException(
                     loadError != null ? loadError : "Tiny1-B JNI 未加载，请使用 ARM64 真机");
         }
-        if (nativePtr == 0) {
-            nativePtr = nativeCreate();
+        if (mNativePtr == 0) {
+            mNativePtr = nativeCreate();
         }
-        if (nativePtr == 0) {
+        if (mNativePtr == 0) {
             throw new IllegalStateException("nativeCreate 返回空指针");
         }
     }
 
     public synchronized boolean connect(UsbHost host) {
         try {
-            if (nativePtr == 0 || host == null || !host.isOpen()) {
+            if (mNativePtr == 0 || host == null || !host.isOpen()) {
                 return false;
             }
             int fd = host.getFileDescriptor();
@@ -89,9 +101,11 @@ public class UVCCamera {
                 Log.e(TAG, "connect: invalid file descriptor " + fd);
                 return false;
             }
+            vid = host.getVendorId();
+            pid = host.getProductId();
             String usbfs = usbfsPath(host.getDeviceName());
             int result = nativeConnect(
-                    nativePtr,
+                    mNativePtr,
                     host.getVendorId(),
                     host.getProductId(),
                     fd,
@@ -104,9 +118,9 @@ public class UVCCamera {
                 return false;
             }
             int sizeResult = nativeSetPreviewSize(
-                    nativePtr,
-                    previewWidth,
-                    previewHeight,
+                    mNativePtr,
+                    mCurrentWidth,
+                    mCurrentHeight,
                     DEFAULT_PREVIEW_MIN_FPS,
                     DEFAULT_PREVIEW_MAX_FPS,
                     FRAME_FORMAT_YUYV,
@@ -116,6 +130,7 @@ public class UVCCamera {
                 Log.e(TAG, "nativeSetPreviewSize failed: " + sizeResult);
                 return false;
             }
+            openStatus = true;
             return true;
         } catch (Throwable error) {
             Log.e(TAG, "connect threw", error);
@@ -125,8 +140,8 @@ public class UVCCamera {
 
     public synchronized void setFrameCallback(IFrameCallback callback) {
         try {
-            if (nativePtr != 0) {
-                nativeSetFrameCallback(nativePtr, callback);
+            if (mNativePtr != 0) {
+                nativeSetFrameCallback(mNativePtr, callback);
             }
         } catch (Throwable error) {
             Log.e(TAG, "setFrameCallback", error);
@@ -135,10 +150,10 @@ public class UVCCamera {
 
     public synchronized boolean startPreview() {
         try {
-            if (nativePtr == 0) {
+            if (mNativePtr == 0) {
                 return false;
             }
-            int result = nativeStartPreview(nativePtr);
+            int result = nativeStartPreview(mNativePtr);
             return result == 0;
         } catch (Throwable error) {
             Log.e(TAG, "startPreview", error);
@@ -148,9 +163,9 @@ public class UVCCamera {
 
     public synchronized void stopPreview() {
         try {
-            if (nativePtr != 0) {
-                nativeSetFrameCallback(nativePtr, null);
-                nativeStopPreview(nativePtr);
+            if (mNativePtr != 0) {
+                nativeSetFrameCallback(mNativePtr, null);
+                nativeStopPreview(mNativePtr);
             }
         } catch (Throwable error) {
             Log.e(TAG, "stopPreview", error);
@@ -159,16 +174,17 @@ public class UVCCamera {
 
     public synchronized void release() {
         try {
-            if (nativePtr != 0) {
-                nativeSetFrameCallback(nativePtr, null);
-                nativeStopPreview(nativePtr);
-                nativeRelease(nativePtr);
-                nativeDestroy(nativePtr);
+            if (mNativePtr != 0) {
+                nativeSetFrameCallback(mNativePtr, null);
+                nativeStopPreview(mNativePtr);
+                nativeRelease(mNativePtr);
+                nativeDestroy(mNativePtr);
             }
         } catch (Throwable error) {
             Log.e(TAG, "release", error);
         } finally {
-            nativePtr = 0;
+            mNativePtr = 0;
+            openStatus = false;
         }
     }
 
@@ -186,14 +202,14 @@ public class UVCCamera {
     }
 
     private native long nativeCreate();
-    private native void nativeDestroy(long idCamera);
-    private native int nativeConnect(long idCamera, int vendorId, int productId, int fileDescriptor,
+    private native void nativeDestroy(long id_camera);
+    private native int nativeConnect(long id_camera, int venderId, int productId, int fileDescriptor,
                                      int busNum, int devAddr, String usbfs);
-    private static native int nativeRelease(long idCamera);
-    private static native int nativeSetPreviewSize(long idCamera, int width, int height,
-                                                   int minFps, int maxFps, int mode, float bandwidth);
-    private static native String nativeGetSupportedSize(long idCamera);
-    private static native int nativeStartPreview(long idCamera);
-    private static native int nativeStopPreview(long idCamera);
-    private static native int nativeSetFrameCallback(long idCamera, IFrameCallback callback);
+    private static native int nativeRelease(long id_camera);
+    private static native int nativeSetPreviewSize(long id_camera, int width, int height,
+                                                   int min_fps, int max_fps, int mode, float bandwidth);
+    private static native String nativeGetSupportedSize(long id_camera);
+    private static native int nativeStartPreview(long id_camera);
+    private static native int nativeStopPreview(long id_camera);
+    private static native int nativeSetFrameCallback(long mNativePtr, IFrameCallback callback);
 }
