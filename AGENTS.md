@@ -119,7 +119,7 @@ This is a **project update key**, not a high-security production secret. Debug a
 
 ## In-app update
 
-Settings → 更新 → **检查更新**. Compares `BuildConfig.VERSION_NAME` to the latest GitHub Release tag. If newer, user downloads the APK to cache and installs via `FileProvider` + `REQUEST_INSTALL_PACKAGES` (unknown-sources permission on API 26+). Progress, errors, and “已是最新版本” are handled. No force-update.
+Settings → 更新 → **检查更新**. Compares `BuildConfig.VERSION_NAME` to the latest GitHub Release **tag** (`AppVersion`, so 1.0.3 is newer than 1.0.2). Parser must tolerate logins like `cursor[bot]` (brackets inside JSON strings). HTTP uses User-Agent `TINY1-B/<version> (+https://github.com/pipidu/TINY1-B)`, follows GitHub → `release-assets.githubusercontent.com` redirects **without** the API `Accept` header, and stores the APK under `cacheDir/updates/`. Install uses `FileProvider` + `ClipData` + `REQUEST_INSTALL_PACKAGES` (unknown-sources screen on API 26+). Failures show a Chinese error; no force-update.
 
 ## Layout
 

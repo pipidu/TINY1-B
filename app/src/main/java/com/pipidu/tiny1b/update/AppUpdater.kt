@@ -1,10 +1,12 @@
 package com.pipidu.tiny1b.update
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.FileProvider
 import com.pipidu.tiny1b.BuildConfig
 import com.pipidu.tiny1b.core.AppVersion
@@ -37,6 +39,7 @@ class AppUpdater(context: Context) {
 
     val currentVersion: String = BuildConfig.VERSION_NAME.substringBefore("-")
     val currentVersionCode: Int = BuildConfig.VERSION_CODE
+    private val userAgent = "TINY1-B/$currentVersion (+https://github.com/$REPO)"
 
     suspend fun check() {
         _status.value = UpdateStatus.Checking
@@ -50,6 +53,7 @@ class AppUpdater(context: Context) {
                 UpdateStatus.UpToDate
             }
         } catch (error: Throwable) {
+            Log.e(TAG, "check", error)
             _status.value = UpdateStatus.Error(error.message ?: "检查更新失败")
         }
     }
@@ -59,17 +63,29 @@ class AppUpdater(context: Context) {
             is UpdateStatus.Available -> current.release
             is UpdateStatus.NeedsPermission -> current.release
             is UpdateStatus.Ready -> current.release
-            is UpdateStatus.Error, UpdateStatus.Idle, UpdateStatus.Checking, UpdateStatus.UpToDate -> {
-                check()
-                ( _status.value as? UpdateStatus.Available)?.release
-                    ?: return
-            }
             is UpdateStatus.Downloading -> return
+            else -> {
+                check()
+                when (val after = _status.value) {
+                    is UpdateStatus.Available -> after.release
+                    is UpdateStatus.UpToDate -> return
+                    is UpdateStatus.Error -> return
+                    else -> {
+                        _status.value = UpdateStatus.Error("没有可下载的新版本")
+                        return
+                    }
+                }
+            }
         }
         try {
             val file = withContext(Dispatchers.IO) {
                 val dir = File(appContext.cacheDir, "updates").apply { mkdirs() }
                 val dest = File(dir, "TINY1-B-${release.version}.apk")
+                if (dest.exists() && dest.length() > 64 &&
+                    (release.sizeBytes <= 0L || dest.length() == release.sizeBytes)
+                ) {
+                    return@withContext dest
+                }
                 httpDownload(release.apkUrl, dest) { read, total ->
                     val p = if (total > 0) (read.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
                     _status.value = UpdateStatus.Downloading(release, p)
@@ -82,6 +98,7 @@ class AppUpdater(context: Context) {
                 _status.value = UpdateStatus.NeedsPermission(release, file)
             }
         } catch (error: Throwable) {
+            Log.e(TAG, "download", error)
             _status.value = UpdateStatus.Error(error.message ?: "下载失败")
         }
     }
@@ -90,7 +107,9 @@ class AppUpdater(context: Context) {
         return Intent(
             Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
             Uri.parse("package:${appContext.packageName}"),
-        )
+        ).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
     }
 
     fun installIntent(): Intent? {
@@ -99,12 +118,23 @@ class AppUpdater(context: Context) {
             is UpdateStatus.NeedsPermission -> current.apk
             else -> null
         } ?: return null
+        if (!apk.exists() || apk.length() < 64) {
+            _status.value = UpdateStatus.Error("安装包不存在，请重新下载")
+            return null
+        }
         if (!canInstall()) return null
         val uri = FileProvider.getUriForFile(appContext, AUTHORITY, apk)
+        INSTALLER_PACKAGES.forEach { pkg ->
+            runCatching {
+                appContext.grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
         return Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
+            clipData = ClipData.newRawUri("apk", uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
     }
 
@@ -128,12 +158,13 @@ class AppUpdater(context: Context) {
     }
 
     private fun httpGet(url: String): String {
-        val connection = open(url)
+        val connection = openFollowing(
+            url = url,
+            accept = "application/vnd.github+json",
+            githubApiHeaders = true,
+            readTimeoutMs = 20_000,
+        )
         try {
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                throw IllegalStateException("GitHub 返回 $code")
-            }
             return connection.inputStream.bufferedReader().use { it.readText() }
         } finally {
             connection.disconnect()
@@ -141,16 +172,19 @@ class AppUpdater(context: Context) {
     }
 
     private fun httpDownload(url: String, dest: File, onProgress: (Long, Long) -> Unit) {
-        val connection = open(url)
+        val tmp = File(dest.parentFile, dest.name + ".part")
+        tmp.delete()
+        val connection = openFollowing(
+            url = url,
+            accept = "*/*",
+            githubApiHeaders = false,
+            readTimeoutMs = 120_000,
+        )
         try {
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                throw IllegalStateException("下载失败 $code")
-            }
             val total = connection.contentLengthLong
-            dest.outputStream().use { out ->
+            tmp.outputStream().use { out ->
                 connection.inputStream.use { input ->
-                    val buf = ByteArray(16 * 1024)
+                    val buf = ByteArray(64 * 1024)
                     var readTotal = 0L
                     while (true) {
                         val n = input.read(buf)
@@ -161,29 +195,92 @@ class AppUpdater(context: Context) {
                     }
                 }
             }
-            if (dest.length() < 64) {
-                dest.delete()
+            if (tmp.length() < 64) {
+                tmp.delete()
                 throw IllegalStateException("APK 文件无效")
+            }
+            dest.delete()
+            if (!tmp.renameTo(dest)) {
+                tmp.copyTo(dest, overwrite = true)
+                tmp.delete()
             }
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun open(url: String): HttpURLConnection {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 30_000
-        connection.instanceFollowRedirects = true
-        connection.setRequestProperty("Accept", "application/vnd.github+json")
-        connection.setRequestProperty("User-Agent", "TINY1-B/${currentVersion}")
-        connection.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-        return connection
+    private fun openFollowing(
+        url: String,
+        accept: String,
+        githubApiHeaders: Boolean,
+        readTimeoutMs: Int,
+        maxRedirects: Int = 6,
+    ): HttpURLConnection {
+        var current = url
+        var currentAccept = accept
+        var sendApiVersion = githubApiHeaders
+        repeat(maxRedirects) {
+            val connection = URL(current).openConnection() as HttpURLConnection
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = 15_000
+            connection.readTimeout = readTimeoutMs
+            connection.setRequestProperty("User-Agent", userAgent)
+            connection.setRequestProperty("Accept", currentAccept)
+            if (sendApiVersion) {
+                connection.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+            }
+            val code = try {
+                connection.responseCode
+            } catch (error: Throwable) {
+                connection.disconnect()
+                throw IllegalStateException("网络错误：${error.message ?: error.javaClass.simpleName}")
+            }
+            if (code in 300..399) {
+                val location = connection.getHeaderField("Location")
+                connection.disconnect()
+                if (location.isNullOrBlank()) {
+                    throw IllegalStateException("下载重定向缺少 Location（$code）")
+                }
+                current = resolveRedirect(current, location)
+                currentAccept = "*/*"
+                sendApiVersion = false
+                return@repeat
+            }
+            if (code !in 200..299) {
+                val detail = runCatching {
+                    (connection.errorStream ?: connection.inputStream)?.bufferedReader()?.readText()
+                }.getOrNull()?.take(120).orEmpty()
+                connection.disconnect()
+                throw IllegalStateException(
+                    when (code) {
+                        403 -> "GitHub 拒绝请求（403）。请检查网络后重试。"
+                        404 -> "未找到发布页（404）。"
+                        else -> "GitHub 返回 $code${if (detail.isBlank()) "" else "：$detail"}"
+                    },
+                )
+            }
+            return connection
+        }
+        throw IllegalStateException("下载重定向过多")
+    }
+
+    private fun resolveRedirect(current: String, location: String): String {
+        return if (location.startsWith("http://") || location.startsWith("https://")) {
+            location
+        } else {
+            URL(URL(current), location).toString()
+        }
     }
 
     companion object {
         const val REPO = "pipidu/TINY1-B"
         const val API_LATEST = "https://api.github.com/repos/$REPO/releases/latest"
         const val AUTHORITY = "com.pipidu.tiny1b.fileprovider"
+        private const val TAG = "AppUpdater"
+        private val INSTALLER_PACKAGES = listOf(
+            "com.android.packageinstaller",
+            "com.google.android.packageinstaller",
+            "com.samsung.android.packageinstaller",
+        )
     }
 }

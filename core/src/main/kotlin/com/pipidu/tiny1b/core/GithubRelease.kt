@@ -44,11 +44,13 @@ object GithubReleaseParser {
         val tag = stringField(json, "tag_name") ?: return null
         val name = stringField(json, "name") ?: tag
         val body = stringField(json, "body").orEmpty()
-        val assets = assetBlock(json) ?: return null
-        val apkName = stringField(assets, "name") { it.endsWith(".apk", ignoreCase = true) } ?: return null
-        val apkUrl = stringField(assets, "browser_download_url") { it.contains(".apk", ignoreCase = true) }
+        val assets = extractJsonArray(json, "assets") ?: return null
+        val apkName = stringField(assets, "name") { it.endsWith(".apk", ignoreCase = true) }
             ?: return null
-        val size = numberField(assets, "size") ?: 0L
+        val apkUrl = stringField(assets, "browser_download_url") { url ->
+            url.contains(".apk", ignoreCase = true)
+        } ?: return null
+        val size = numberFieldNear(assets, "size", apkName) ?: numberField(assets, "size") ?: 0L
         return GithubRelease(
             tagName = tag,
             name = name,
@@ -59,14 +61,37 @@ object GithubReleaseParser {
         )
     }
 
-    private fun assetBlock(json: String): String? {
-        val start = json.indexOf("\"assets\"")
-        if (start < 0) return null
-        val bracket = json.indexOf('[', start)
-        if (bracket < 0) return null
-        val end = json.indexOf(']', bracket)
-        if (end < 0) return null
-        return json.substring(bracket, end + 1)
+    /**
+     * Extract a top-level JSON array by key, skipping brackets that appear inside
+     * strings (GitHub logins like `cursor[bot]` used to truncate the assets array).
+     */
+    internal fun extractJsonArray(json: String, key: String): String? {
+        val header = Regex("\"${Regex.escape(key)}\"\\s*:\\s*\\[")
+        val match = header.find(json) ?: return null
+        val start = match.range.last
+        var depth = 0
+        var inString = false
+        var escape = false
+        for (i in start until json.length) {
+            val c = json[i]
+            if (inString) {
+                when {
+                    escape -> escape = false
+                    c == '\\' -> escape = true
+                    c == '"' -> inString = false
+                }
+                continue
+            }
+            when (c) {
+                '"' -> inString = true
+                '[' -> depth++
+                ']' -> {
+                    depth--
+                    if (depth == 0) return json.substring(start, i + 1)
+                }
+            }
+        }
+        return null
     }
 
     private fun stringField(
@@ -74,13 +99,20 @@ object GithubReleaseParser {
         key: String,
         predicate: (String) -> Boolean = { true },
     ): String? {
-        val regex = Regex("\"$key\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"")
+        val regex = Regex("\"${Regex.escape(key)}\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"")
         return regex.findAll(json).map { unescape(it.groupValues[1]) }.firstOrNull(predicate)
     }
 
     private fun numberField(json: String, key: String): Long? {
-        val regex = Regex("\"$key\"\\s*:\\s*(-?\\d+)")
+        val regex = Regex("\"${Regex.escape(key)}\"\\s*:\\s*(-?\\d+)")
         return regex.find(json)?.groupValues?.get(1)?.toLongOrNull()
+    }
+
+    private fun numberFieldNear(json: String, key: String, nearby: String): Long? {
+        val idx = json.indexOf(nearby)
+        if (idx < 0) return null
+        val window = json.substring(idx, (idx + 800).coerceAtMost(json.length))
+        return numberField(window, key)
     }
 
     private fun unescape(value: String): String =
