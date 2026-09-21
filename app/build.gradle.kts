@@ -11,7 +11,9 @@ android {
     defaultConfig {
         applicationId = "com.pipidu.tiny1b"
         minSdk = 26
-        targetSdk = 35
+        // Match the Infiray Tiny1-B demo (targetSdk 26). targetSdk 34+ blocks the
+        // implicit USB permission PendingIntent the module needs to show a dialog.
+        targetSdk = 26
         versionCode = 3
         versionName = "1.0.2"
         ndk {

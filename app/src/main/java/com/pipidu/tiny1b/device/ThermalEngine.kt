@@ -71,6 +71,7 @@ class ThermalEngine(
     private val connecting = AtomicBoolean(false)
     private val activityResumed = AtomicBoolean(false)
     private val permissionRequestInFlight = AtomicBoolean(false)
+    private val pausedDuringPermissionRequest = AtomicBoolean(false)
     private val latestFrame = AtomicReference<ByteArray?>()
     private val frameLock = Object()
     private val connectLock = Any()
@@ -111,12 +112,12 @@ class ThermalEngine(
             }
             if (settings.samplePreview) startSample()
         }
+        host.onPermissionResult = { granted -> onUsbPermissionResult(granted) }
     }
 
     fun start() {
         if (running.getAndSet(true)) {
             host.register()
-            if (_state.value.status != DeviceStatus.Live) connectIfPresent()
             return
         }
         host.register()
@@ -131,11 +132,6 @@ class ThermalEngine(
                 )
             }
             if (settings.samplePreview) startSample()
-            return
-        }
-        connectIfPresent()
-        if (_state.value.status != DeviceStatus.Live && settings.samplePreview) {
-            startSample()
         }
     }
 
@@ -151,34 +147,49 @@ class ThermalEngine(
 
     fun retryConnect() = connectIfPresent()
 
+    fun bindActivity(activity: android.app.Activity) {
+        host.bindActivity(activity)
+    }
+
+    fun unbindActivity(activity: android.app.Activity) {
+        host.unbindActivity(activity)
+    }
+
     fun onActivityResumed() {
         activityResumed.set(true)
         if (running.get()) connectIfPresent()
     }
 
     fun onActivityPaused() {
+        if (permissionRequestInFlight.get()) {
+            pausedDuringPermissionRequest.set(true)
+        }
         activityResumed.set(false)
     }
 
     /**
-     * Only treat a false result as 被拒 when the activity was in the foreground so a
-     * system dialog could actually have been shown. Background/instant denials are
-     * retried on the next resume.
+     * Instant granted=false (no system dialog) is NOT 被拒. The USB permission
+     * overlay pauses the activity; a real refusal therefore arrives after a pause
+     * or after the user has had time to tap the dialog.
      */
     fun onUsbPermissionResult(granted: Boolean) {
         permissionRequestInFlight.set(false)
         if (granted) {
             host.clearDenied()
+            pausedDuringPermissionRequest.set(false)
             connectIfPresent()
             return
         }
-        if (!activityResumed.get()) {
-            Log.w(TAG, "ignoring USB permission denied while not resumed (no dialog)")
+        val elapsed = android.os.SystemClock.elapsedRealtime() - host.lastPermissionRequestAt
+        val looksLikeUserDialog = pausedDuringPermissionRequest.get() || elapsed >= 800
+        pausedDuringPermissionRequest.set(false)
+        if (!looksLikeUserDialog) {
+            Log.w(TAG, "ignoring instant USB deny (${elapsed}ms, no pause) — dialog never shown")
             _state.update {
                 it.copy(
                     status = DeviceStatus.PermissionNeeded,
-                    statusDetail = "等待 USB 授权",
-                    errorMessage = "请将应用保持在前台，系统会弹出 USB 授权窗口。",
+                    statusDetail = "需要 USB 权限",
+                    errorMessage = "系统将弹出 USB 授权窗口，请选择「允许」。若未出现弹窗，请点「授权 USB」。",
                 )
             }
             return
@@ -241,10 +252,17 @@ class ThermalEngine(
             return
         }
         permissionRequestInFlight.set(true)
+        pausedDuringPermissionRequest.set(false)
         val error = host.requestPermission(device)
         if (error != null) {
             permissionRequestInFlight.set(false)
-            failConnect(error)
+            _state.update {
+                it.copy(
+                    status = DeviceStatus.PermissionNeeded,
+                    statusDetail = "需要 USB 权限",
+                    errorMessage = error,
+                )
+            }
             return
         }
         _state.update {

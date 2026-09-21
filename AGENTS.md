@@ -12,7 +12,7 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-On `main`: Compose app, **light UI**, USB session, ISR, display denoise (default off), palettes, min/max + center + user points, in-app GitHub update. Connect is crash-survivable. USB 被拒 is shown **only after the user refuses the system dialog**. No vendor demo tree in git.
+On `main`: Compose app, light UI, USB session **matching the Infiray demo grant path** (`targetSdk 26`, implicit Activity PendingIntent flags=0). ISR, denoise (default off), palettes, measurement, in-app GitHub update. No vendor demo tree in git.
 
 ## Current architecture
 
@@ -27,7 +27,7 @@ keystore/ Project signing key (required so later APKs overwrite the same install
 - `SettingsScreen` covers ISR, 降噪, min/max, center, shutter, KB cal, sample preview, **检查更新**.
 - `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated).
 
-USB permission: `UsbManager.requestPermission` uses an **explicit** PendingIntent to `UsbPermissionReceiver` (manifest, `exported=false`). Request only while the activity is **resumed**. Instant `granted=false` without `EXTRA_PERMISSION_GRANTED` or while not resumed is **not** shown as 被拒 — that was the 1.0.1 fake-denied bug. 被拒 only after the user actually refuses the system dialog.
+USB permission follows the **vendor demo**, not Android 14’s explicit-PendingIntent rules. Connecting Tiny1-B matters more than targetSdk 35.
 
 ## UI theme
 
@@ -46,7 +46,7 @@ Thermal **palettes stay on the image** (`Palettes` LUT). Measurement labels on t
 
 ## Tiny1-B integration
 
-1. USB host matches **VID `0x0BDA` / PID `0x3901`** (`device_filter.xml` decimal 3034/14593).
+1. USB host matches **VID `0x0BDA` / PID `0x3901`**.
 2. After permission, `UsbHostController` opens a connection; `UVCCamera.connect` passes fd/bus/dev into `libUVCCamera`.
 3. Preview size **256×384** YUYV. Each frame is split: **256×192** image + **256×192** Kelvin-16 temperature, then rotated 90° CCW to **192×256** portrait (`FrameParser`).
 4. Temperature: `°C = raw/16 − 273.15`.
@@ -63,15 +63,33 @@ User report: plugging Tiny1-B caused 闪退. Root causes in code (not hardware-r
 5. Attach receiver flags — `RECEIVER_NOT_EXPORTED` drops system USB attach/detach. Attach receiver is `RECEIVER_EXPORTED`.
 6. JNI / worker exceptions — `UVCCamera` native calls, `onFrame`, ISP worker, and control transfers are try/caught. Connect runs on `tiny1b-connect` under a mutex. Failures set `DeviceStatus.Error` with a Chinese `errorMessage` instead of dying. Non-main uncaught Java exceptions are swallowed after updating the error card (native SIGSEGV still cannot be recovered).
 
-## USB permission (do not show 被拒 without a dialog)
+## USB permission (match the Infiray demo)
 
-1.0.1 showed **USB 权限被拒** without ever popping the system prompt. Causes:
+The vendor demo (`targetSdkVersion 26`) **can** show the system USB dialog and connect Tiny1-B. Our 1.0.1–1.0.2 path could not.
 
-- `requestPermission` ran from `onCreate`/`onStart` while the activity was not resumed. UsbManager then sends `EXTRA_PERMISSION_GRANTED=false` **without a dialog**.
-- PendingIntent used `setPackage` + pre-filled `EXTRA_DEVICE` + a dynamically registered `RECEIVER_NOT_EXPORTED`. On Android 14+ the fill-in extras can be dropped; `getBooleanExtra(..., false)` then looks like a user refusal.
-- The grant path never ran because that fake-false result set `PermissionDenied` first.
+What the demo does that we did not:
 
-Fix: explicit-component PI to `UsbPermissionReceiver`; no extras on the request Intent; request only when resumed; ignore results that lack the grant extra or arrive while paused. VID `0x0BDA` / PID `0x3901` unchanged.
+| Demo | 1.0.2 (broken on hardware) |
+|------|----------------------------|
+| `targetSdkVersion 26` | `targetSdk 35` |
+| No `USB_DEVICE_ATTACHED` / `device_filter` on the Activity | Manifest attach filter + filter XML |
+| `new Intent(ACTION)` implicit, **no package, no component, no extras** | Explicit component `UsbPermissionReceiver` |
+| `PendingIntent.getBroadcast(activity, 0, intent, **0**)` | `FLAG_MUTABLE \| FLAG_UPDATE_CURRENT` |
+| `registerReceiver` on the **Activity** right before request | Application / manifest `exported=false` |
+| `UsbControlBlock` constructed with `MainActivity.this` in `onResume` | Application-scoped host |
+| `openDevice` only after `hasPermission` (lazy fd) | same after grant; grant never arrived |
+
+On targetSdk 34+, an implicit mutable USB PI is illegal, so 1.0.2 used an explicit component. `UsbManager.requestPermission` then **does not show a dialog** and immediately broadcasts `granted=false`. Because that arrives while resumed, 1.0.2 still showed **权限被拒**. The grant path never ran.
+
+Fix (connecting the module > staying on 35):
+
+- **`targetSdk = 26`** (compileSdk stays 35). Same USB restriction surface as the demo on Android 14 phones.
+- Implicit action-only PI, flags `0`, Activity context, dynamic receiver — same sequence as `UsbControlBlock.requestPermission`.
+- Do **not** unregister the permission receiver in `onPause` (the system dialog pauses the Activity).
+- Instant `granted=false` (<800ms and no pause) is **not** 被拒. 被拒 only after a pause or enough time for the user to tap the dialog.
+- No `USB_DEVICE_ATTACHED` Activity filter (demo has none). Plug-in is detected by a dynamic attach receiver.
+
+VID `0x0BDA` / PID `0x3901` unchanged.
 
 ## ISR
 
@@ -150,9 +168,10 @@ Optional: 设置 → 样例画面, to exercise palettes/ISR/points without hardw
 
 ## Hardware-only gaps
 
-- Real Tiny1-B USB attach, permission, UVC stream, shutter click, and KB cal cannot be verified in this environment. Connect crashes were reproduced from code paths (permission PI, lifecycle, fd, JNI) rather than a physical module.
+- Real Tiny1-B USB attach, permission dialog, UVC stream, shutter, and KB cal cannot be verified in this environment. 1.0.3 matches the demo’s USB grant path from source; a phone is still required to confirm the system dialog.
 - Only `arm64-v8a` vendor JNI is available. Native SIGSEGV inside `libUVCCamera` cannot be caught in Java.
 - In-app install of a downloaded APK needs a physical device + unknown-sources permission.
+- `targetSdk` is **26** on purpose (same as the Infiray demo) so Tiny1-B USB permission works on Android 14 phones.
 
 ## Process
 

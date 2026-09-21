@@ -1,5 +1,6 @@
 package com.pipidu.tiny1b.device
 
+import android.app.Activity
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -9,10 +10,17 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import com.pipidu.tiny1b.core.Tiny1BFormat
 import com.zz.infisense.camera.UVCCamera
+import java.lang.ref.WeakReference
 
+/**
+ * USB host session matching the Infiray demo's Tiny1-B grant path:
+ * Activity-context implicit PendingIntent with flags=0, dynamic permission
+ * receiver, openDevice only after hasPermission.
+ */
 class UsbHostController(context: Context) : UVCCamera.UsbHost {
     private val appContext = context.applicationContext
     private val usbManager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -21,9 +29,14 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     @Volatile private var connection: UsbDeviceConnection? = null
     @Volatile var lastPermissionDenied: Boolean = false
         private set
+    @Volatile var lastPermissionRequestAt: Long = 0L
+        private set
 
+    var onPermissionResult: ((granted: Boolean) -> Unit)? = null
     var onAttach: (() -> Unit)? = null
     var onDetach: (() -> Unit)? = null
+
+    private var activityRef = WeakReference<Activity>(null)
 
     private val attachFilter = IntentFilter().apply {
         addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
@@ -31,6 +44,17 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     }
 
     @Volatile private var attachRegistered = false
+    @Volatile private var permissionRegistered = false
+
+    private val permissionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != ACTION_USB_PERMISSION) return
+            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+            Log.i(TAG, "permission result granted=$granted hasExtra=${intent.hasExtra(UsbManager.EXTRA_PERMISSION_GRANTED)}")
+            lastPermissionDenied = !granted
+            onPermissionResult?.invoke(granted)
+        }
+    }
 
     private val attachReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -51,10 +75,24 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
         }
     }
 
+    fun bindActivity(activity: Activity) {
+        activityRef = WeakReference(activity)
+        ensurePermissionReceiver(activity)
+    }
+
+    fun unbindActivity(activity: Activity) {
+        if (activityRef.get() === activity) {
+            activityRef = WeakReference(null)
+        }
+        if (permissionRegistered) {
+            runCatching { activity.unregisterReceiver(permissionReceiver) }
+            permissionRegistered = false
+        }
+    }
+
     fun register() {
         if (!attachRegistered) {
-            // USB attach/detach are system broadcasts and must be exported.
-            registerInternal(attachReceiver, attachFilter, exported = true)
+            registerLegacy(appContext, attachReceiver, attachFilter)
             attachRegistered = true
         }
     }
@@ -85,23 +123,22 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     }
 
     /**
-     * Ask for USB permission. The PendingIntent targets [UsbPermissionReceiver]
-     * explicitly (component + action, no extras) so UsbManager can fill in
-     * EXTRA_PERMISSION_GRANTED. Returns a Chinese error if the request itself failed.
+     * Same call sequence as the vendor demo [UsbControlBlock.requestPermission]:
+     * implicit action-only Intent, PendingIntent flags 0, register receiver on the
+     * Activity, then [UsbManager.requestPermission].
      */
     fun requestPermission(usbDevice: UsbDevice): String? {
+        val activity = activityRef.get()
+        if (activity == null || activity.isFinishing) {
+            return "请将应用保持在前台后再授权 USB。"
+        }
         return try {
-            val intent = Intent(appContext, UsbPermissionReceiver::class.java).apply {
-                action = ACTION_USB_PERMISSION
-            }
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val pi = PendingIntent.getBroadcast(appContext, REQUEST_CODE, intent, flags)
+            ensurePermissionReceiver(activity)
+            val intent = Intent(ACTION_USB_PERMISSION)
+            val pi = PendingIntent.getBroadcast(activity, 0, intent, permissionPiFlags())
+            lastPermissionRequestAt = SystemClock.elapsedRealtime()
             usbManager.requestPermission(usbDevice, pi)
-            Log.i(TAG, "requestPermission issued for vid=${usbDevice.vendorId} pid=${usbDevice.productId}")
+            Log.i(TAG, "requestPermission issued vid=${usbDevice.vendorId} pid=${usbDevice.productId} flags=${permissionPiFlags()}")
             null
         } catch (error: Throwable) {
             Log.e(TAG, "requestPermission", error)
@@ -135,9 +172,6 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
         }
     }
 
-    /**
-     * Close the Java USB connection only after native UVC has released the fd.
-     */
     @Synchronized
     fun close() {
         closeConnectionOnly()
@@ -180,12 +214,39 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
         return parts[parts.size - fromEnd].toIntOrNull() ?: 0
     }
 
-    private fun registerInternal(receiver: BroadcastReceiver, filter: IntentFilter, exported: Boolean) {
-        if (Build.VERSION.SDK_INT >= 33) {
-            val flags = if (exported) Context.RECEIVER_EXPORTED else Context.RECEIVER_NOT_EXPORTED
-            appContext.registerReceiver(receiver, filter, flags)
+    private fun ensurePermissionReceiver(activity: Activity) {
+        if (permissionRegistered) return
+        registerLegacy(activity, permissionReceiver, IntentFilter(ACTION_USB_PERMISSION))
+        permissionRegistered = true
+    }
+
+    /**
+     * Demo registers with the two-arg [Context.registerReceiver] (no exported flag).
+     * targetSdk 26 keeps that legal on Android 13+; only use the 33+ overload if
+     * we ever raise targetSdk again.
+     */
+    private fun registerLegacy(context: Context, receiver: BroadcastReceiver, filter: IntentFilter) {
+        val target = context.applicationInfo.targetSdkVersion
+        if (Build.VERSION.SDK_INT >= 33 && target >= 33) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
         } else {
-            appContext.registerReceiver(receiver, filter)
+            context.registerReceiver(receiver, filter)
+        }
+    }
+
+    /**
+     * Demo: PendingIntent flags = 0. That is mutable on targetSdk < 31.
+     * If targetSdk is ever raised to 34+, implicit USB PIs need
+     * FLAG_MUTABLE | FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT — not an explicit component.
+     */
+    private fun permissionPiFlags(): Int {
+        val target = appContext.applicationInfo.targetSdkVersion
+        return when {
+            Build.VERSION.SDK_INT >= 34 && target >= 34 -> {
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT
+            }
+            Build.VERSION.SDK_INT >= 31 && target >= 31 -> PendingIntent.FLAG_MUTABLE
+            else -> 0
         }
     }
 
@@ -200,7 +261,6 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
 
     companion object {
         const val ACTION_USB_PERMISSION = "com.pipidu.tiny1b.USB_PERMISSION"
-        private const val REQUEST_CODE = 0x71B1
         private const val TAG = "UsbHostController"
     }
 }

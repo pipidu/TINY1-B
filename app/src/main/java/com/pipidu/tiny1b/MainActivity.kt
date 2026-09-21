@@ -2,7 +2,6 @@ package com.pipidu.tiny1b
 
 import android.content.Intent
 import android.graphics.Color as AndroidColor
-import android.hardware.usb.UsbManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -36,7 +35,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleUsbIntent(intent)
+        viewModel.retry()
     }
 
     override fun onStart() {
@@ -46,8 +45,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel.onHostResumed()
-        handleUsbIntent(intent)
+        viewModel.bindUsb(this)
+        window.decorView.post {
+            if (!isFinishing) {
+                viewModel.onHostResumed()
+            }
+        }
     }
 
     override fun onPause() {
@@ -56,15 +59,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        viewModel.unbindUsb(this)
         if (isFinishing) {
             viewModel.stop()
         }
         super.onDestroy()
-    }
-
-    private fun handleUsbIntent(intent: Intent?) {
-        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            viewModel.retry()
-        }
     }
 }

@@ -30,6 +30,8 @@ class ThermalViewModel(
 
     fun start() = engine.start()
     fun stop() = engine.stop()
+    fun bindUsb(activity: android.app.Activity) = engine.bindActivity(activity)
+    fun unbindUsb(activity: android.app.Activity) = engine.unbindActivity(activity)
     fun retry() = engine.retryConnect()
     fun requestUsbPermission() = engine.requestUsbPermission()
     fun shutter() = engine.shutter()
