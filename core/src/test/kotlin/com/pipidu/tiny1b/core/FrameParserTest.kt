@@ -67,6 +67,23 @@ class FrameParserTest {
     }
 
     @Test
+    fun applyOrientation90CwSwapsSizeAndMovesMarker() {
+        val src = ThermalPlanes(
+            width = 3,
+            height = 2,
+            luminance = floatArrayOf(1f, 2f, 3f, 4f, 5f, 6f),
+            kelvin16 = intArrayOf(1, 2, 3, 4, 5, 6),
+        )
+        val rotated = FrameParser.applyOrientation(src, DisplayRotation.DEG_90, mirror = false)
+        assertEquals(2, rotated.width)
+        assertEquals(3, rotated.height)
+        // 1 2 3      4 1
+        // 4 5 6  ->  5 2
+        //            6 3
+        assertEquals(listOf(4f, 1f, 5f, 2f, 6f, 3f), rotated.luminance.toList())
+    }
+
+    @Test
     fun rotate90CcwMovesOriginToBottomLeft() {
         val src = floatArrayOf(1f, 2f, 3f, 4f, 5f, 6f)
         val dst = FrameParser.rotate90Ccw(src, 3, 2)

@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.SystemClock
 import android.util.Log
+import com.pipidu.tiny1b.core.DisplayRotation
 import com.pipidu.tiny1b.core.FrameParser
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.MeasurementModel
@@ -65,6 +66,7 @@ data class EngineState(
     val useFahrenheit: Boolean = false,
     val samplePreview: Boolean = false,
     val denoise: Boolean = false,
+    val rotation: DisplayRotation = DisplayRotation.DEG_0,
     val shutterMaxSeconds: Int = 30,
     val colorBarMin: Float = 0f,
     val colorBarMax: Float = 40f,
@@ -257,6 +259,19 @@ class ThermalEngine(
     fun setMirror(value: Boolean) {
         settings.mirror = value
         _state.update { it.copy(mirror = value) }
+    }
+
+    fun setRotation(value: DisplayRotation) {
+        val from = settings.rotation
+        if (from != value) {
+            measurement.remapUsers(from, value)
+        }
+        settings.rotation = value
+        _state.update { it.copy(rotation = value) }
+    }
+
+    fun cycleRotation() {
+        setRotation(settings.rotation.nextClockwise())
     }
 
     fun setFahrenheit(value: Boolean) {
@@ -634,9 +649,7 @@ class ThermalEngine(
 
     private fun processFrame(frame: ByteArray) {
         var planes = runCatching { FrameParser.parseUvcFrame(frame) }.getOrNull() ?: return
-        if (settings.mirror) {
-            planes = FrameParser.mirrorHorizontal(planes)
-        }
+        planes = FrameParser.applyOrientation(planes, settings.rotation, settings.mirror)
         lastPlanes = planes
         val palette = Palettes.get(settings.paletteId)
         val rendered: RenderedFrame = SuperResolution.enhance(
@@ -681,6 +694,7 @@ class ThermalEngine(
         useFahrenheit = settings.useFahrenheit,
         samplePreview = settings.samplePreview,
         denoise = settings.denoise,
+        rotation = settings.rotation,
         shutterMaxSeconds = settings.shutterMaxSeconds,
     )
 

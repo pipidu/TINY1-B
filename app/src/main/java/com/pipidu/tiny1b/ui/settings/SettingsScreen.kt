@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.content.Intent
+import com.pipidu.tiny1b.core.DisplayRotation
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.device.EngineState
 import com.pipidu.tiny1b.ui.theme.Accent
@@ -64,6 +65,7 @@ fun SettingsScreen(
     onShowCenter: (Boolean) -> Unit,
     onShowMinMax: (Boolean) -> Unit,
     onMirror: (Boolean) -> Unit,
+    onRotation: (DisplayRotation) -> Unit,
     onFahrenheit: (Boolean) -> Unit,
     onSample: (Boolean) -> Unit,
     onDenoise: (Boolean) -> Unit,
@@ -99,7 +101,7 @@ fun SettingsScreen(
         ) {
             Section("画面") {
                 Text("软件 ISR 超分辨率", color = Ink, fontSize = 14.sp)
-                Text("在温度场双三次放大后叠加亮度细节，测量仍在原生 192×256 网格上取样。", color = Muted, fontSize = 12.sp)
+                Text("温度场双线性放大后叠亮度细节。比旧版双三次快很多，测温仍在旋转后的原生网格上取样。", color = Muted, fontSize = 12.sp)
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     IsrScale.entries.forEach { scale ->
@@ -111,6 +113,22 @@ fun SettingsScreen(
                                 .background(if (active) AccentSoft else SurfaceMuted),
                         ) {
                             Text(scale.labelZh, color = if (active) Accent else Ink)
+                        }
+                    }
+                }
+                Text("画面旋转", color = Ink, fontSize = 14.sp)
+                Text("顺时针旋转实时画面与测温点，下次启动仍保持该角度。", color = Muted, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DisplayRotation.entries.forEach { rotation ->
+                        val active = state.rotation == rotation
+                        TextButton(
+                            onClick = { onRotation(rotation) },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (active) AccentSoft else SurfaceMuted),
+                        ) {
+                            Text(rotation.labelZh, color = if (active) Accent else Ink)
                         }
                     }
                 }

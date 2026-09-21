@@ -58,6 +58,16 @@ class MeasurementModel(
         selectedId = null
     }
 
+    fun remapUsers(from: DisplayRotation, to: DisplayRotation) {
+        if (from == to) return
+        for (id in user.keys.toList()) {
+            val p = user[id] ?: continue
+            val native = from.toNative(p.first, p.second)
+            val mapped = to.fromNative(native.first, native.second)
+            user[id] = mapped.first.coerceIn(0f, 1f) to mapped.second.coerceIn(0f, 1f)
+        }
+    }
+
     fun nearestUser(nx: Float, ny: Float, threshold: Float = 0.045f): Long? {
         var best: Long? = null
         var bestD = threshold

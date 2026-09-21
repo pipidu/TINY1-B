@@ -15,8 +15,11 @@ data class RenderedFrame(
 )
 
 /**
- * Software ISR: bicubic upsample of temperature AGC, fused with YUYV luminance
- * detail (high-pass) so edges stay sharper than a plain stretch.
+ * Live ISR: fuse temperature AGC with Y detail at native resolution, then
+ * bilinear-upsample (2× or 4×). The old 4×4 bicubic-per-plane path was too
+ * slow for Tiny1-B's ~23 fps stream.
+ *
+ * Measurement still samples [RenderedFrame.native], not the upscaled pixels.
  */
 object SuperResolution {
     fun enhance(
@@ -34,110 +37,84 @@ object SuperResolution {
             yNorm = cleaned.first
             tempNorm = cleaned.second
         }
-        var fusedW = planes.width
-        var fusedH = planes.height
-        var tempHr = tempNorm
-        var yHr = yNorm
-        var passes = when (scale) {
-            IsrScale.OFF -> 0
-            IsrScale.X2 -> 1
-            IsrScale.X4 -> 2
+        val blurY = boxBlur3(yNorm, planes.width, planes.height)
+        val fusedNative = FloatArray(tempNorm.size) { i ->
+            val detail = yNorm[i] - blurY[i]
+            (tempNorm[i] * 0.82f + yNorm[i] * 0.10f + detail * 0.55f).coerceIn(0f, 1f)
         }
-        repeat(passes) {
-            tempHr = bicubic2x(tempHr, fusedW, fusedH)
-            yHr = bicubic2x(yHr, fusedW, fusedH)
-            fusedW *= 2
-            fusedH *= 2
-            yHr = unsharp(yHr, fusedW, fusedH, 0.55f)
-        }
-        val detail = if (passes == 0) {
-            FloatArray(yHr.size)
+        val factor = scale.factor
+        val fused = if (factor == 1) {
+            fusedNative
         } else {
-            val blur = boxBlur3(yHr, fusedW, fusedH)
-            FloatArray(yHr.size) { i -> yHr[i] - blur[i] }
+            bilinearScale(fusedNative, planes.width, planes.height, factor)
         }
-        val fused = FloatArray(tempHr.size) { i ->
-            (tempHr[i] * 0.78f + yHr[i] * 0.14f + detail[i] * 0.72f).coerceIn(0f, 1f)
+        val outW = planes.width * factor
+        val outH = planes.height * factor
+        val lut = palette.lut
+        val argb = IntArray(fused.size) { i ->
+            val idx = (fused[i] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            lut[idx]
         }
-        val argb = IntArray(fused.size) { i -> palette.argb(fused[i]) }
-        return RenderedFrame(fusedW, fusedH, argb, fused, planes)
+        return RenderedFrame(outW, outH, argb, fused, planes)
     }
 
-    internal fun bicubic2x(src: FloatArray, width: Int, height: Int): FloatArray {
-        val nw = width * 2
-        val nh = height * 2
+    internal fun bilinearScale(src: FloatArray, width: Int, height: Int, factor: Int): FloatArray {
+        require(factor >= 2)
+        val nw = width * factor
+        val nh = height * factor
         val dst = FloatArray(nw * nh)
+        val inv = 1f / factor
         for (y in 0 until nh) {
-            val fy = (y + 0.5f) / 2f - 0.5f
-            val y0 = kotlin.math.floor(fy).toInt()
-            val ty = fy - y0
+            val fy = (y + 0.5f) * inv - 0.5f
+            val y0 = fy.toInt().coerceIn(0, height - 1)
+            val y1 = (y0 + 1).coerceAtMost(height - 1)
+            val ty = (fy - y0).coerceIn(0f, 1f)
+            val row0 = y0 * width
+            val row1 = y1 * width
+            val dstRow = y * nw
             for (x in 0 until nw) {
-                val fx = (x + 0.5f) / 2f - 0.5f
-                val x0 = kotlin.math.floor(fx).toInt()
-                val tx = fx - x0
-                var acc = 0f
-                for (j in -1..2) {
-                    val wy = cubic(ty - j)
-                    for (i in -1..2) {
-                        acc += sample(src, width, height, x0 + i, y0 + j) * cubic(tx - i) * wy
-                    }
-                }
-                dst[y * nw + x] = acc
+                val fx = (x + 0.5f) * inv - 0.5f
+                val x0 = fx.toInt().coerceIn(0, width - 1)
+                val x1 = (x0 + 1).coerceAtMost(width - 1)
+                val tx = (fx - x0).coerceIn(0f, 1f)
+                val v00 = src[row0 + x0]
+                val v10 = src[row0 + x1]
+                val v01 = src[row1 + x0]
+                val v11 = src[row1 + x1]
+                val top = v00 + (v10 - v00) * tx
+                val bot = v01 + (v11 - v01) * tx
+                dst[dstRow + x] = top + (bot - top) * ty
             }
         }
         return dst
-    }
-
-    private fun cubic(t: Float): Float {
-        val a = -0.5f
-        val x = kotlin.math.abs(t)
-        return when {
-            x < 1f -> ((a + 2f) * x - (a + 3f)) * x * x + 1f
-            x < 2f -> (((a * x - 5f * a) * x) + 8f * a) * x - 4f * a
-            else -> 0f
-        }
-    }
-
-    private fun sample(src: FloatArray, w: Int, h: Int, x: Int, y: Int): Float {
-        val xx = x.coerceIn(0, w - 1)
-        val yy = y.coerceIn(0, h - 1)
-        return src[yy * w + xx]
-    }
-
-    internal fun unsharp(src: FloatArray, w: Int, h: Int, amount: Float): FloatArray {
-        val blur = boxBlur3(src, w, h)
-        return FloatArray(src.size) { i ->
-            (src[i] + amount * (src[i] - blur[i])).coerceIn(0f, 1f)
-        }
     }
 
     internal fun boxBlur3(src: FloatArray, w: Int, h: Int): FloatArray {
         val tmp = FloatArray(src.size)
         val out = FloatArray(src.size)
         for (y in 0 until h) {
+            val row = y * w
             for (x in 0 until w) {
                 var acc = 0f
                 var n = 0
-                for (dx in -1..1) {
-                    val xx = x + dx
-                    if (xx in 0 until w) {
-                        acc += src[y * w + xx]
-                        n++
-                    }
+                val x0 = (x - 1).coerceAtLeast(0)
+                val x1 = (x + 1).coerceAtMost(w - 1)
+                for (xx in x0..x1) {
+                    acc += src[row + xx]
+                    n++
                 }
-                tmp[y * w + x] = acc / n
+                tmp[row + x] = acc / n
             }
         }
         for (y in 0 until h) {
+            val y0 = (y - 1).coerceAtLeast(0)
+            val y1 = (y + 1).coerceAtMost(h - 1)
             for (x in 0 until w) {
                 var acc = 0f
                 var n = 0
-                for (dy in -1..1) {
-                    val yy = y + dy
-                    if (yy in 0 until h) {
-                        acc += tmp[yy * w + x]
-                        n++
-                    }
+                for (yy in y0..y1) {
+                    acc += tmp[yy * w + x]
+                    n++
                 }
                 out[y * w + x] = acc / n
             }

@@ -16,7 +16,7 @@ The product **is** the Infiray Android demo USB/JNI camera path, with this repo�
 
 ## Current status
 
-On `main`: **1.0.11** (`versionCode` **12**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16 (no 256×192 rotate). Then denoise → software ISR → palettes → measurement. In-app GitHub updater for `pipidu/TINY1-B`.
+On `main`: **1.0.12** (`versionCode` **13**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Temperature legend lives in the top FPS bar. In-app GitHub updater for `pipidu/TINY1-B`.
 
 ## Current architecture
 
@@ -73,7 +73,15 @@ Do **not** add back: `UsbHostController`, `UvcCapture`, `Usbfs`, `Tiny1BCommands
 
 ## ISR
 
-`SuperResolution`: percentile-AGC on temperature, Catmull-Rom 2× (optional second pass for 4×), unsharp Y-detail fused into the temperature field, then palette LUT. **Measurement always samples the native 192×256 temperature grid**, not the upscaled pixels.
+`SuperResolution`: percentile-AGC on temperature, fuse Y-detail at **native** resolution, then **bilinear** 2×/4× (not 4×4 bicubic — that tanked fps on 1.0.11). Palette LUT after upsample. **Measurement always samples the oriented native grid**, not the upscaled pixels.
+
+## Display orientation
+
+Settings → 画面 → **画面旋转** (0° / 90° / 180° / 270°), also the live-view dock **旋转** button (cycles clockwise). Stored in `tiny1b_settings`. Custom measurement points remap with the rotation. Horizontal mirror still applies after rotation.
+
+## UI chrome
+
+The temperature color legend is **inside the top status card** (min · gradient · max · fps). Do not put a vertical bar on the right of the live image — it covered the scene.
 
 ## Denoise
 
@@ -87,7 +95,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.11** (`versionCode` **12**).
+- Current: **1.0.12** (`versionCode` **13**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -104,6 +112,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 - **1.0.9**: never `openDevice` unless `hasPermission`; show 正在请求 USB 权限 and walk targetSdk 35 `requestPermission` PI variants (setPackage+MUTABLE, implicit+UNSAFE, demo flags=0). Instant false is not 被拒. Open the instance that reports true. Hardware: still could not connect.
 - **1.0.10**: delete the from-scratch Kotlin UVC/USBFS product. Ship the vendor demo USB+JNI path (`libUVCCamera`, `com.zz.infisense.camera`, targetSdk 26, flags=0) and port ISR / denoise / measurement / palettes / settings / GitHub updater onto it. Hardware: connects ~23 fps, but image was four stacked bands + side stripes.
 - **1.0.11**: frame decode matches demo `onFrame` (192×256 YUYV + Kelvin-16, no 256×192 rotate). USB/JNI unchanged.
+- **1.0.12**: persisted 0/90/180/270 display rotation; bilinear ISR so 超分 does not crush fps; temperature legend moved into the top FPS card.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.pipidu.tiny1b.AppContainer
+import com.pipidu.tiny1b.core.DisplayRotation
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.device.EngineState
@@ -46,6 +47,8 @@ class ThermalViewModel(
     fun setShowCenter(value: Boolean) = engine.setShowCenter(value)
     fun setShowMinMax(value: Boolean) = engine.setShowMinMax(value)
     fun setMirror(value: Boolean) = engine.setMirror(value)
+    fun setRotation(value: DisplayRotation) = engine.setRotation(value)
+    fun cycleRotation() = engine.cycleRotation()
     fun setFahrenheit(value: Boolean) = engine.setFahrenheit(value)
     fun setSamplePreview(value: Boolean) = engine.setSamplePreview(value)
     fun setDenoise(value: Boolean) = engine.setDenoise(value)

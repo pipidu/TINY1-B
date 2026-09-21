@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,6 +27,7 @@ import androidx.compose.material.icons.outlined.Camera
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.MyLocation
+import androidx.compose.material.icons.outlined.ScreenRotation
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Usb
 import androidx.compose.material.icons.outlined.AutoFixHigh
@@ -82,6 +82,7 @@ fun LiveViewScreen(
     onShutter: () -> Unit,
     onPalette: (PaletteId) -> Unit,
     onIsr: (IsrScale) -> Unit,
+    onRotate: () -> Unit,
     onMeasureEdit: (Boolean) -> Unit,
     onAddOrSelect: (Float, Float) -> Unit,
     onBeginDrag: (Float, Float) -> Long?,
@@ -106,17 +107,6 @@ fun LiveViewScreen(
                 onRemoveNearest = onRemoveNearest,
                 modifier = Modifier.fillMaxSize(),
             )
-            ColorBar(
-                palette = state.palette,
-                minC = state.colorBarMin,
-                maxC = state.colorBarMax,
-                fahrenheit = state.useFahrenheit,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
-                    .statusBarsPadding()
-                    .padding(end = 12.dp, top = 88.dp, bottom = 140.dp),
-            )
         } else {
             ConnectPanel(
                 state = state,
@@ -126,6 +116,7 @@ fun LiveViewScreen(
 
         TopChrome(
             state = state,
+            showLegend = live && state.bitmap != null,
             onOpenSettings = onOpenSettings,
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -158,6 +149,7 @@ fun LiveViewScreen(
                 live = live,
                 measureEdit = state.measureEdit,
                 isr = state.isr,
+                rotationLabel = state.rotation.labelZh,
                 onShutter = onShutter,
                 onPalette = { paletteOpen = !paletteOpen },
                 onMeasure = { onMeasureEdit(!state.measureEdit) },
@@ -169,7 +161,7 @@ fun LiveViewScreen(
                     }
                     onIsr(next)
                 },
-                onSettings = onOpenSettings,
+                onRotate = onRotate,
             )
         }
     }
@@ -178,10 +170,11 @@ fun LiveViewScreen(
 @Composable
 private fun TopChrome(
     state: EngineState,
+    showLegend: Boolean,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .shadow(2.dp, RoundedCornerShape(22.dp), clip = false)
@@ -189,20 +182,48 @@ private fun TopChrome(
             .background(Surface.copy(alpha = 0.96f))
             .border(1.dp, Outline, RoundedCornerShape(22.dp))
             .padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column {
-            Text("TINY1-B", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp)
-            Text("热成像 · 红外测温", color = Muted, fontSize = 12.sp)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            StatusChip(state.status)
-            if (state.fps > 0) {
-                Text("${state.fps} fps", color = Muted, fontSize = 12.sp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column {
+                Text("TINY1-B", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.2.sp)
+                if (!showLegend) {
+                    Text("热成像 · 红外测温", color = Muted, fontSize = 12.sp)
+                }
             }
-            IconButton(onClick = onOpenSettings) {
-                Icon(Icons.Outlined.Settings, contentDescription = "设置", tint = Ink)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                StatusChip(state.status)
+                IconButton(onClick = onOpenSettings) {
+                    Icon(Icons.Outlined.Settings, contentDescription = "设置", tint = Ink)
+                }
+            }
+        }
+        if (showLegend) {
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(formatTemp(state.colorBarMin, state.useFahrenheit), color = Cold, fontSize = 11.sp)
+                val lut = Palettes.get(state.palette).lut
+                val colors = remember(state.palette) {
+                    listOf(0, 64, 128, 192, 255).map { Color(lut[it]) }
+                }
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .height(10.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Brush.horizontalGradient(colors)),
+                )
+                Text(formatTemp(state.colorBarMax, state.useFahrenheit), color = Hot, fontSize = 11.sp)
+                if (state.fps > 0) {
+                    Text("${state.fps} fps", color = Muted, fontSize = 12.sp)
+                }
             }
         }
     }
@@ -231,50 +252,16 @@ private fun StatusChip(status: DeviceStatus) {
 }
 
 @Composable
-private fun ColorBar(
-    palette: PaletteId,
-    minC: Float,
-    maxC: Float,
-    fahrenheit: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val lut = Palettes.get(palette).lut
-    val colors = remember(palette) {
-        listOf(0, 64, 128, 192, 255).map { Color(lut[it]) }.reversed()
-    }
-    Column(
-        modifier = modifier
-            .width(52.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(Surface.copy(alpha = 0.92f))
-            .border(1.dp, Outline, RoundedCornerShape(16.dp))
-            .padding(vertical = 8.dp, horizontal = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(formatTemp(maxC, fahrenheit), color = Hot, fontSize = 10.sp)
-        Spacer(Modifier.height(4.dp))
-        Box(
-            Modifier
-                .width(12.dp)
-                .weight(1f)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Brush.verticalGradient(colors)),
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(formatTemp(minC, fahrenheit), color = Cold, fontSize = 10.sp)
-    }
-}
-
-@Composable
 private fun BottomDock(
     live: Boolean,
     measureEdit: Boolean,
     isr: IsrScale,
+    rotationLabel: String,
     onShutter: () -> Unit,
     onPalette: () -> Unit,
     onMeasure: () -> Unit,
     onIsr: () -> Unit,
-    onSettings: () -> Unit,
+    onRotate: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -291,7 +278,7 @@ private fun BottomDock(
         DockItem("色板", Icons.Outlined.Palette, onClick = onPalette)
         DockItem("测温", Icons.Outlined.MyLocation, active = measureEdit, onClick = onMeasure)
         DockItem(isr.labelZh, Icons.Outlined.AutoFixHigh, active = isr != IsrScale.OFF, onClick = onIsr)
-        DockItem("设置", Icons.Outlined.Settings, onClick = onSettings)
+        DockItem(rotationLabel, Icons.Outlined.ScreenRotation, active = rotationLabel != "0°", onClick = onRotate)
     }
 }
 

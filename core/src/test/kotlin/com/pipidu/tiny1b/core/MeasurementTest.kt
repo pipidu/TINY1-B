@@ -32,4 +32,15 @@ class MeasurementTest {
         assertEquals(id, model.nearestUser(0.21f, 0.19f))
         assertNull(model.nearestUser(0.9f, 0.9f))
     }
+
+    @Test
+    fun remapUsersFollowsClockwiseRotation() {
+        val model = MeasurementModel()
+        val id = model.addUser(0.25f, 0.4f)!!
+        model.remapUsers(DisplayRotation.DEG_0, DisplayRotation.DEG_90)
+        val planes = FrameParser.parseUvcFrame(SyntheticScene.uvcFrame())
+        val user = model.snapshot(planes).points.first { it.kind == PointKind.USER && it.id == id }
+        assertEquals(0.6f, user.nx, 1e-4f)
+        assertEquals(0.25f, user.ny, 1e-4f)
+    }
 }

@@ -1,6 +1,7 @@
 package com.pipidu.tiny1b.data
 
 import android.content.Context
+import com.pipidu.tiny1b.core.DisplayRotation
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 
@@ -43,6 +44,10 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean(KEY_DENOISE, false)
         set(value) { prefs.edit().putBoolean(KEY_DENOISE, value).apply() }
 
+    var rotation: DisplayRotation
+        get() = DisplayRotation.entries.getOrElse(prefs.getInt(KEY_ROTATION, 0)) { DisplayRotation.DEG_0 }
+        set(value) { prefs.edit().putInt(KEY_ROTATION, value.ordinal).apply() }
+
     companion object {
         private const val KEY_PALETTE = "palette"
         private const val KEY_ISR = "isr"
@@ -53,5 +58,6 @@ class AppSettings(context: Context) {
         private const val KEY_SAMPLE = "sample"
         private const val KEY_SHUTTER = "shutter_max"
         private const val KEY_DENOISE = "denoise"
+        private const val KEY_ROTATION = "rotation"
     }
 }
