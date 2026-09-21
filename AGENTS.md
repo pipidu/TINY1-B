@@ -77,12 +77,13 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 
 ## Versioning + GitHub Releases
 
-- `versionName` starts at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
+- Current: **1.0.1** (`versionCode` **2**).
+- `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
-- First Release is **1.0.0** (denoise + in-app updater included).
 - Tag the release as `1.0.x` (no `v` prefix). Attach `TINY1-B-1.0.x.apk`.
 - applicationId is always `com.pipidu.tiny1b` (no `.debug` suffix) so updates overwrite.
+- **1.0.1**: crash-survivable Tiny1-B USB connect + light UI as the primary look.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk
