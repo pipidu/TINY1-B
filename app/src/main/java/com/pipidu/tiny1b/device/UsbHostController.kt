@@ -311,6 +311,7 @@ class UsbHostController(context: Context) {
         }
     }
 
+    @android.annotation.SuppressLint("UnspecifiedImmutableFlag")
     private fun pendingIntent(
         activity: Activity,
         kind: UsbPermissionSequence.PendingIntentKind,
