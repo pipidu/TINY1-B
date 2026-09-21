@@ -12,37 +12,41 @@ Production Android app for the Infiray Tiny1-B USB thermal module.
 
 ## Current status
 
-- `main` has agent notes and ignore rules. App scaffold is next.
+- JNI stack dropped under `app/src/main/jniLibs/arm64-v8a/` with rewritten `UVCCamera` / `IFrameCallback` holders.
+- App Gradle scaffold, imaging ISR, measurement UI still to land.
 - Device path (from private demo study, not shipped): UVC **VID `0x0BDA` / PID `0x3901`**, stream **256×384** YUYV, split into **256×192** image + **256×192** temperature, rotate 90° CCW for portrait. Temperature is `uint16` little-endian, **°C = raw/16 − 273.15**.
 
-## Product goals
+## Tiny1-B integration
 
-- Tiny1-B over USB using the vendor UVC JNI stack.
-- Software ISR super-resolution on the live thermal image.
-- Live min/max temperature markers.
-- Center point plus user points (add / move / remove) with live °C.
-- Chinese production UI: connect, live view, palettes, measurement, settings, USB permission, empty/error states.
+1. USB host finds VID/PID `0x0BDA`/`0x3901`, requests permission, opens a file descriptor.
+2. `UVCCamera.connect` passes fd/bus/dev to `libUVCCamera`; preview size **256×384** YUYV.
+3. Each callback frame is split in half: image YUYV then temperature plane (see `core` `FrameParser` once added).
+4. ISP commands (shutter, KB cal, max shutter interval) use USB control transfers on the UVC control interface — product code, not demo UI.
 
-## Layout (target)
+## ISR / measurement
+
+Not implemented in tree yet. Target: software 2×/4× fusion of temperature AGC + Y-detail, min/max markers, center + user points.
+
+## Layout
 
 ```
-AGENTS.md                 this file
-README.md                 product readme (Chinese)
+AGENTS.md
+README.md
 .gitignore
-app/                      Android application (Compose)
-core/                     pure-JVM imaging / measure / parse (unit-tested)
+app/src/main/jniLibs/arm64-v8a/*.so     Tiny1-B UVC JNI (required)
+app/src/main/java/com/zz/infisense/camera/   JNI class names required by .so
 ```
 
 ## Build / run
 
-Not scaffolded yet. After scaffold:
+Not fully scaffolded. After Gradle lands:
 
 ```bash
 ./gradlew :core:test
 ./gradlew :app:assembleDebug
 ```
 
-Install the debug APK on an **arm64** Android phone with USB-OTG; Tiny1-B is not an emulator device.
+Arm64 Android phone + USB-OTG + Tiny1-B. Emulators cannot load these `.so` files.
 
 ## Process
 
