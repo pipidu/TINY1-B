@@ -21,6 +21,6 @@ export ANDROID_HOME=/path/to/Android/Sdk
 ./gradlew :app:assembleDebug
 ```
 
-将 debug APK 装到 **ARM64** 真机，用 USB OTG 连接 Tiny1-B（VID `0BDA` / PID `3901`）。
+将 **release** APK 装到 **ARM64** 真机，用 USB OTG 连接 Tiny1-B（VID `0BDA` / PID `3901`）。设置里可检查 GitHub 更新。
 
 更完整的模块说明见 [AGENTS.md](AGENTS.md)。

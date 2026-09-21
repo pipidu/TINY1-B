@@ -19,17 +19,26 @@ android {
         }
     }
 
+    signingConfigs {
+        create("project") {
+            storeFile = rootProject.file("keystore/tiny1b-release.jks")
+            storePassword = "tiny1b"
+            keyAlias = "tiny1b"
+            keyPassword = "tiny1b"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("project")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
         }
         debug {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
+            signingConfig = signingConfigs.getByName("project")
         }
     }
 

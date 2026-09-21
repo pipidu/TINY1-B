@@ -12,6 +12,8 @@ captures/
 *.jks
 *.keystore
 keystore.properties
+!keystore/tiny1b-release.jks
+
 
 # Built packages
 *.apk

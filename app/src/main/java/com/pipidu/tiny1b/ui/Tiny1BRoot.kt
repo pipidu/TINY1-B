@@ -16,12 +16,16 @@ import com.pipidu.tiny1b.ui.theme.Ink
 @Composable
 fun Tiny1BRoot(viewModel: ThermalViewModel) {
     val state by viewModel.ui.collectAsStateWithLifecycle()
+    val updateStatus by viewModel.updateStatus.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Ink) {
         if (showSettings) {
             SettingsScreen(
                 state = state,
+                updateStatus = updateStatus,
+                currentVersion = viewModel.currentVersion,
+                currentVersionCode = viewModel.currentVersionCode,
                 onBack = { showSettings = false },
                 onIsr = viewModel::setIsr,
                 onShowCenter = viewModel::setShowCenter,
@@ -32,6 +36,10 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
                 onDenoise = viewModel::setDenoise,
                 onShutterMax = viewModel::applyShutterMax,
                 onKbCal = viewModel::setKbCalibrate,
+                onCheckUpdate = viewModel::checkUpdate,
+                onDownloadUpdate = viewModel::downloadUpdate,
+                onInstallPermission = viewModel::installPermissionIntent,
+                onInstall = viewModel::installIntent,
             )
         } else {
             LiveViewScreen(

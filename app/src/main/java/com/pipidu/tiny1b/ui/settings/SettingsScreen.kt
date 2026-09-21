@@ -17,8 +17,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -28,20 +31,28 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.device.EngineState
 import com.pipidu.tiny1b.ui.theme.Ember
+import com.pipidu.tiny1b.ui.theme.Hot
 import com.pipidu.tiny1b.ui.theme.Ink
 import com.pipidu.tiny1b.ui.theme.InkElevated
+import com.pipidu.tiny1b.ui.theme.Live
 import com.pipidu.tiny1b.ui.theme.Mist
 import com.pipidu.tiny1b.ui.theme.Sand
+import com.pipidu.tiny1b.update.UpdateStatus
 
 @Composable
 fun SettingsScreen(
     state: EngineState,
+    updateStatus: UpdateStatus,
+    currentVersion: String,
+    currentVersionCode: Int,
     onBack: () -> Unit,
     onIsr: (IsrScale) -> Unit,
     onShowCenter: (Boolean) -> Unit,
@@ -52,7 +63,12 @@ fun SettingsScreen(
     onDenoise: (Boolean) -> Unit,
     onShutterMax: (Int) -> Unit,
     onKbCal: (Boolean) -> Unit,
+    onCheckUpdate: () -> Unit,
+    onDownloadUpdate: () -> Unit,
+    onInstallPermission: () -> Intent,
+    onInstall: () -> Intent?,
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -128,8 +144,67 @@ fun SettingsScreen(
                     onSample,
                 )
             }
+            Section("更新") {
+                Text("当前版本  $currentVersion  ($currentVersionCode)", color = Sand, fontSize = 14.sp)
+                Text("从 GitHub Releases（pipidu/TINY1-B）检查新版本，由你手动下载安装，不会强制更新。", color = Mist, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                when (val status = updateStatus) {
+                    UpdateStatus.Idle -> {
+                        Button(
+                            onClick = onCheckUpdate,
+                            colors = ButtonDefaults.buttonColors(containerColor = Ember, contentColor = Ink),
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text("检查更新") }
+                    }
+                    UpdateStatus.Checking -> Text("正在检查…", color = Mist, fontSize = 13.sp)
+                    UpdateStatus.UpToDate -> {
+                        Text("已是最新版本", color = Live, fontSize = 13.sp)
+                        TextButton(onClick = onCheckUpdate) { Text("重新检查", color = Ember) }
+                    }
+                    is UpdateStatus.Available -> {
+                        Text("发现新版本  ${status.release.version}", color = Ember, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        if (status.release.body.isNotBlank()) {
+                            Text(status.release.body.take(240), color = Mist, fontSize = 12.sp)
+                        }
+                        Button(
+                            onClick = onDownloadUpdate,
+                            colors = ButtonDefaults.buttonColors(containerColor = Ember, contentColor = Ink),
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text("下载并安装") }
+                    }
+                    is UpdateStatus.Downloading -> {
+                        Text("正在下载  ${(status.progress * 100).toInt()}%", color = Sand, fontSize = 13.sp)
+                        LinearProgressIndicator(
+                            progress = { status.progress },
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)),
+                            color = Ember,
+                            trackColor = Ink,
+                        )
+                    }
+                    is UpdateStatus.NeedsPermission -> {
+                        Text("需要允许安装未知应用，才能安装下载的 APK。", color = Ember, fontSize = 13.sp)
+                        Button(
+                            onClick = { context.startActivity(onInstallPermission()) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Ember, contentColor = Ink),
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text("去授权") }
+                    }
+                    is UpdateStatus.Ready -> {
+                        Text("已下载 ${status.release.version}，可以安装。", color = Live, fontSize = 13.sp)
+                        Button(
+                            onClick = { onInstall()?.let { context.startActivity(it) } },
+                            colors = ButtonDefaults.buttonColors(containerColor = Ember, contentColor = Ink),
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text("立即安装") }
+                    }
+                    is UpdateStatus.Error -> {
+                        Text(status.message, color = Hot, fontSize = 13.sp)
+                        TextButton(onClick = onCheckUpdate) { Text("重试", color = Ember) }
+                    }
+                }
+            }
             Section("关于") {
-                Text("TINY1-B 热成像  1.0.0", color = Sand, fontSize = 14.sp)
+                Text("TINY1-B 热成像  $currentVersion", color = Sand, fontSize = 14.sp)
                 Text("Infiray Tiny1-B · USB VID 0BDA / PID 3901 · 256×384 YUYV 叠温", color = Mist, fontSize = 12.sp)
                 Text("本应用为独立产品，不含厂商 demo 工程。", color = Mist, fontSize = 12.sp)
             }

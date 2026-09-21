@@ -8,18 +8,25 @@ import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.device.EngineState
 import com.pipidu.tiny1b.device.ThermalEngine
+import com.pipidu.tiny1b.update.AppUpdater
+import com.pipidu.tiny1b.update.UpdateStatus
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 class ThermalViewModel(
     private val engine: ThermalEngine,
+    private val updater: AppUpdater,
 ) : ViewModel() {
     val ui: StateFlow<EngineState> = engine.state.stateIn(
         viewModelScope,
         SharingStarted.Eagerly,
         engine.state.value,
     )
+    val updateStatus: StateFlow<UpdateStatus> = updater.status
+    val currentVersion: String = updater.currentVersion
+    val currentVersionCode: Int = updater.currentVersionCode
 
     fun start() = engine.start()
     fun stop() = engine.stop()
@@ -44,12 +51,18 @@ class ThermalViewModel(
     fun removeSelected() = engine.removeSelected()
     fun clearUserPoints() = engine.clearUserPoints()
 
+    fun checkUpdate() = viewModelScope.launch { updater.check() }
+    fun downloadUpdate() = viewModelScope.launch { updater.download() }
+    fun installPermissionIntent() = updater.installPermissionIntent()
+    fun installIntent() = updater.installIntent()
+    fun onHostResumed() = updater.onInstallPermissionResult()
+
     companion object {
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return ThermalViewModel(container.engine) as T
+                    return ThermalViewModel(container.engine, container.updater) as T
                 }
             }
     }
