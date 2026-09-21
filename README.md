@@ -14,7 +14,7 @@
 
 ## 构建
 
-需要 JDK 21+ 与 Android SDK（compileSdk 35，**targetSdk 26** 以匹配 Tiny1-B USB 授权）。
+需要 JDK 21+ 与 Android SDK（compileSdk 35，targetSdk 35）。
 
 ```bash
 export ANDROID_HOME=/path/to/Android/Sdk

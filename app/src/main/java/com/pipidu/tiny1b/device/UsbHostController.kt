@@ -17,9 +17,8 @@ import com.zz.infisense.camera.UVCCamera
 import java.lang.ref.WeakReference
 
 /**
- * USB host session matching the Infiray demo's Tiny1-B grant path:
- * Activity-context implicit PendingIntent with flags=0, dynamic permission
- * receiver, openDevice only after hasPermission.
+ * USB host session for Tiny1-B.
+ * Permission: ACTION + setPackage(applicationId), FLAG_MUTABLE, exported receiver.
  */
 class UsbHostController(context: Context) : UVCCamera.UsbHost {
     private val appContext = context.applicationContext
@@ -123,9 +122,8 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     }
 
     /**
-     * Same call sequence as the vendor demo [UsbControlBlock.requestPermission]:
-     * implicit action-only Intent, PendingIntent flags 0, register receiver on the
-     * Activity, then [UsbManager.requestPermission].
+     * Current Android USB permission: action + setPackage (not setComponent),
+     * FLAG_MUTABLE, receiver exported so UsbManager can deliver the result.
      */
     fun requestPermission(usbDevice: UsbDevice): String? {
         val activity = activityRef.get()
@@ -134,12 +132,29 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
         }
         return try {
             ensurePermissionReceiver(activity)
-            val intent = Intent(ACTION_USB_PERMISSION)
+            val intent = Intent(ACTION_USB_PERMISSION).apply {
+                setPackage(activity.packageName)
+            }
             val pi = PendingIntent.getBroadcast(activity, 0, intent, permissionPiFlags())
             lastPermissionRequestAt = SystemClock.elapsedRealtime()
             usbManager.requestPermission(usbDevice, pi)
-            Log.i(TAG, "requestPermission issued vid=${usbDevice.vendorId} pid=${usbDevice.productId} flags=${permissionPiFlags()}")
+            Log.i(TAG, "requestPermission issued vid=${usbDevice.vendorId} pid=${usbDevice.productId}")
             null
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "retry USB PI with FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT", error)
+            try {
+                val intent = Intent(ACTION_USB_PERMISSION).apply {
+                    setPackage(activity.packageName)
+                }
+                val flags = PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT
+                val pi = PendingIntent.getBroadcast(activity, 0, intent, flags)
+                lastPermissionRequestAt = SystemClock.elapsedRealtime()
+                usbManager.requestPermission(usbDevice, pi)
+                null
+            } catch (retry: Throwable) {
+                Log.e(TAG, "requestPermission", retry)
+                "无法弹出 USB 授权（${retry.javaClass.simpleName}）。请拔掉后重新插入模组。"
+            }
         } catch (error: Throwable) {
             Log.e(TAG, "requestPermission", error)
             "无法弹出 USB 授权（${error.javaClass.simpleName}）。请拔掉后重新插入模组。"
@@ -221,13 +236,11 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     }
 
     /**
-     * Demo registers with the two-arg [Context.registerReceiver] (no exported flag).
-     * targetSdk 26 keeps that legal on Android 13+; only use the 33+ overload if
-     * we ever raise targetSdk again.
+     * Permission result is delivered by UsbManager (system). The receiver must be
+     * exported. Attach/detach are also system broadcasts.
      */
     private fun registerLegacy(context: Context, receiver: BroadcastReceiver, filter: IntentFilter) {
-        val target = context.applicationInfo.targetSdkVersion
-        if (Build.VERSION.SDK_INT >= 33 && target >= 33) {
+        if (Build.VERSION.SDK_INT >= 33) {
             context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             context.registerReceiver(receiver, filter)
@@ -235,18 +248,14 @@ class UsbHostController(context: Context) : UVCCamera.UsbHost {
     }
 
     /**
-     * Demo: PendingIntent flags = 0. That is mutable on targetSdk < 31.
-     * If targetSdk is ever raised to 34+, implicit USB PIs need
-     * FLAG_MUTABLE | FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT — not an explicit component.
+     * targetSdk 35: FLAG_MUTABLE so UsbManager can fill EXTRA_PERMISSION_GRANTED.
+     * Intent uses setPackage (package-explicit), not setComponent.
      */
     private fun permissionPiFlags(): Int {
-        val target = appContext.applicationInfo.targetSdkVersion
-        return when {
-            Build.VERSION.SDK_INT >= 34 && target >= 34 -> {
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT
-            }
-            Build.VERSION.SDK_INT >= 31 && target >= 31 -> PendingIntent.FLAG_MUTABLE
-            else -> 0
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_MUTABLE
+        } else {
+            0
         }
     }
 

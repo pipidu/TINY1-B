@@ -11,9 +11,7 @@ android {
     defaultConfig {
         applicationId = "com.pipidu.tiny1b"
         minSdk = 26
-        // Match the Infiray Tiny1-B demo (targetSdk 26). targetSdk 34+ blocks the
-        // implicit USB permission PendingIntent the module needs to show a dialog.
-        targetSdk = 26
+        targetSdk = 35
         versionCode = 4
         versionName = "1.0.3"
         ndk {
@@ -63,12 +61,6 @@ android {
             keepDebugSymbols += "**/*.so"
             useLegacyPackaging = true
         }
-    }
-
-    lint {
-        // GitHub-distributed APK, not Play. Tiny1-B USB permission needs targetSdk 26
-        // like the Infiray demo; ExpiredTargetSdkVersion would block the release assemble.
-        disable += "ExpiredTargetSdkVersion"
     }
 }
 
