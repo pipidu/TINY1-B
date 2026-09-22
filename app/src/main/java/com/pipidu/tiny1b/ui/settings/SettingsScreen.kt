@@ -86,7 +86,7 @@ fun SettingsScreen(
     onRotation: (DisplayRotation) -> Unit,
     onFahrenheit: (Boolean) -> Unit,
     onSample: (Boolean) -> Unit,
-    onDenoise: (Boolean) -> Unit,
+    onDenoiseAmount: (Int) -> Unit,
     onMarkerOpacity: (Int) -> Unit,
     onSharpen: (Int) -> Unit,
     onSpanFixed: (Boolean) -> Unit,
@@ -225,11 +225,26 @@ fun SettingsScreen(
                     }
                 }
                 ToggleRow("水平镜像", "左右翻转实时画面", state.mirror, onMirror)
-                ToggleRow(
-                    "降噪",
-                    "默认关闭。用中值滤波去掉画面散斑；测温仍读取未滤波的原生温度网格。",
-                    state.denoise,
-                    onDenoise,
+                Text(
+                    if (state.denoiseAmount <= 0) "降噪  关闭" else "降噪  ${state.denoiseAmount}%",
+                    color = Ink,
+                    fontSize = 14.sp,
+                )
+                Text(
+                    "默认关闭。可分离 3 点中值，只作用显示画面，测温仍读未滤波的原生温度网格。0 为关；越高越接近满强度滤波。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                )
+                Slider(
+                    value = state.denoiseAmount.toFloat(),
+                    onValueChange = { onDenoiseAmount(it.toInt()) },
+                    valueRange = 0f..100f,
+                    steps = 19,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Accent,
+                        activeTrackColor = Accent,
+                        inactiveTrackColor = SurfaceMuted,
+                    ),
                 )
                 Text(
                     if (state.sharpenAmount <= 0) "锐化  关闭" else "锐化  ${state.sharpenAmount}%",

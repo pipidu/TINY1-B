@@ -16,7 +16,7 @@ The product **is** the Infiray Android demo USB/JNI camera path, with this repo�
 
 ## Current status
 
-On `main`: **1.0.18** (`versionCode` **19**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off) is **vsync-paced** across the native interval (not a burst when the next UVC plane arrives). **锐化** (0–100, default off) on the display fuse only. **固定上下限** locks the palette to a user °C range. Marker opacity for 中心/最高/最低. Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). Photo / record hints overlay the live image (no dock layout shift). Min/max markers follow the current frame extrema (1.0.16 dwell reverted). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
+On `main`: **1.0.19** (`versionCode` **20**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off) is **vsync-paced** across the native interval (not a burst when the next UVC plane arrives). **降噪** 0–100 (default off) is a cheap separable 3-tap median on the native display planes. **锐化** (0–100, default off) on the display fuse only. **固定上下限** locks the palette to a user °C range. Marker opacity for 中心/最高/最低. Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). Photo / record hints overlay the live image (no dock layout shift). Min/max markers follow the current frame extrema (1.0.16 dwell reverted). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
 
 ## Current architecture
 
@@ -30,7 +30,7 @@ keystore/ Project signing key (required so later APKs overwrite the same install
 
 - `ThermalEngine` constructs `UVCCamera(0x0BDA, 0x3901, 256, 384, activity, handler)`, `create()`, then `open()` with the demo 5s retry. `onFrame` → triple UVC scratch → `FrameParser.parseUvcFrame`. Unplug: set Searching + `bitmap=null` first, then `UVCCamera.abandon()` (no native stop/release/destroy). Do not leave a frozen last frame with status 已连接.
 - `LiveViewScreen` is a Column: top chrome (title / fps / status / 设置), thermal stage, **below-image** legend strip + dock **快门 / 拍照 / 录像 / 测温**. 色板 / ISR / 帧生成 / 旋转 live in Settings. 快门 and 测温 are disabled unless `DeviceStatus.Live`. Empty/permission/error cards when not live.
-- `SettingsScreen` covers 色板, **固定上下限**, ISR, **帧生成**, 画面旋转, 降噪, **锐化**, min/max, center, **标注透明度**, **手动快门**, shutter max **120s**, KB cal, sample preview, **清除缓存**, **检查更新**.
+- `SettingsScreen` covers 色板, **固定上下限**, ISR, **帧生成**, 画面旋转, **降噪 0–100**, **锐化**, min/max, center, **标注透明度**, **手动快门**, shutter max **120s**, KB cal, sample preview, **清除缓存**, **检查更新**.
 - `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated). `OneShotGate` + immediate `Downloading` so double-tap cannot start two downloads. Prunes `cacheDir/updates` to the APK being downloaded.
 
 ## UI theme
@@ -136,7 +136,17 @@ Dock **快门 / 拍照 / 录像 / 测温** (with the legend strip in the same bo
 
 ## Denoise
 
-Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5×5 median on the display luminance and a 3×3 median on the AGC-normalized temperature used for false color. Display-only: `kelvin16` / `MeasurementModel` still read the unfiltered native grid.
+Settings → 画面 → **降噪** slider 0–100, default **0 (关闭)**. Runs on the **native** 192×256 display planes **before** ISR, never on the 2×/4× bitmap.
+
+The old 5×5 / 3×3 insertion-sort median was too expensive for the live path. 1.0.19 uses a **separable 3-tap median** (horizontal then vertical `median3`) into `IspScratch.denoiseY` / `denoiseT` with `blurTmp` as the ping-pong row buffer — no per-frame allocations.
+
+| Strength | Mix with unfiltered | Y passes | Temperature (false-color) |
+|----------|---------------------|----------|---------------------------|
+| 0 | skip (off) | 0 | skip |
+| 1–79 | `amount/100` | 1 | 1 pass, same mix |
+| 80–100 | `amount/100` (1.0 at 100) | 2 | 1 pass, same mix |
+
+Display-only: `kelvin16` / `MeasurementModel` still read the unfiltered native grid. A previous boolean `denoise=true` migrates to amount **100**.
 
 ## Sharpen
 
@@ -155,7 +165,7 @@ Settings → 画面 → **固定上下限**. Off (default): percentile AGC each 
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.18** (`versionCode` **19**).
+- Current: **1.0.19** (`versionCode` **20**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -179,6 +189,7 @@ Settings → 画面 → **固定上下限**. Off (default): percentile AGC each 
 - **1.0.16**: min/max markers dwell 400 ms (4 px hold, 1.0 °C immediate jump) so they stop flickering; photo/record hints overlay the live image and no longer shift the dock. USB/JNI unchanged.
 - **1.0.17**: revert min/max dwell (markers follow the live extrema again). Settings: 标注透明度 (中心/最高/最低), 锐化 0–100 display-only, 固定上下限 palette span. USB/JNI unchanged.
 - **1.0.18**: 帧生成 is vsync-paced (HandlerThread + Choreographer) across the native period. 2× of 25 fps → ~50; 3× of 25 fps → ~75 capped at refresh. 40 ms native is not skipped. USB/JNI unchanged.
+- **1.0.19**: cheaper live 降噪 (separable 3-tap median on native 192×256, reused scratch) plus persisted strength 0–100 (0 = off). Measurement still unfiltered Kelvin. USB/JNI unchanged.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk

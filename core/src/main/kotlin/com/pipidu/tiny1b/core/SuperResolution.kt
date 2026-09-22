@@ -58,7 +58,7 @@ object SuperResolution {
         planes: ThermalPlanes,
         scale: IsrScale,
         palette: Palette,
-        denoise: Boolean = false,
+        denoiseAmount: Int = 0,
         scratch: IspScratch? = null,
         sharpenAmount: Int = 0,
         spanLowC: Float? = null,
@@ -77,14 +77,17 @@ object SuperResolution {
         }
         val ySrc: FloatArray
         val tSrc: FloatArray
-        if (denoise) {
+        val denoiseAmt = denoiseAmount.coerceIn(0, 100)
+        if (denoiseAmt > 0) {
             Denoise.apply(
                 s.yNorm,
                 s.tempNorm,
                 planes.width,
                 planes.height,
+                amount = denoiseAmt,
                 destY = s.denoiseY,
                 destT = s.denoiseT,
+                tmp = s.blurTmp,
             )
             ySrc = s.denoiseY
             tSrc = s.denoiseT

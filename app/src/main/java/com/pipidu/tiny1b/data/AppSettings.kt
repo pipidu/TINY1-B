@@ -41,9 +41,16 @@ class AppSettings(context: Context) {
         get() = prefs.getInt(KEY_SHUTTER, 30)
         set(value) { prefs.edit().putInt(KEY_SHUTTER, value.coerceIn(1, 120)).apply() }
 
-    var denoise: Boolean
-        get() = prefs.getBoolean(KEY_DENOISE, false)
-        set(value) { prefs.edit().putBoolean(KEY_DENOISE, value).apply() }
+    var denoiseAmount: Int
+        get() {
+            if (prefs.contains(KEY_DENOISE_AMOUNT)) {
+                return prefs.getInt(KEY_DENOISE_AMOUNT, 0).coerceIn(0, 100)
+            }
+            return if (prefs.getBoolean(KEY_DENOISE, false)) 100 else 0
+        }
+        set(value) {
+            prefs.edit().putInt(KEY_DENOISE_AMOUNT, value.coerceIn(0, 100)).apply()
+        }
 
     var rotation: DisplayRotation
         get() = DisplayRotation.entries.getOrElse(prefs.getInt(KEY_ROTATION, 0)) { DisplayRotation.DEG_0 }
@@ -83,6 +90,7 @@ class AppSettings(context: Context) {
         private const val KEY_SAMPLE = "sample"
         private const val KEY_SHUTTER = "shutter_max"
         private const val KEY_DENOISE = "denoise"
+        private const val KEY_DENOISE_AMOUNT = "denoise_amount"
         private const val KEY_ROTATION = "rotation"
         private const val KEY_FRAME_GEN = "frame_gen"
         private const val KEY_MARKER_OPACITY = "marker_opacity"

@@ -75,7 +75,7 @@ data class EngineState(
     val mirror: Boolean = false,
     val useFahrenheit: Boolean = false,
     val samplePreview: Boolean = false,
-    val denoise: Boolean = false,
+    val denoiseAmount: Int = 0,
     val rotation: DisplayRotation = DisplayRotation.DEG_0,
     val frameGen: FrameGenScale = FrameGenScale.OFF,
     val markerOpacity: Int = 100,
@@ -370,9 +370,10 @@ class ThermalEngine(
         if (!value) stopSample()
     }
 
-    fun setDenoise(value: Boolean) {
-        settings.denoise = value
-        _state.update { it.copy(denoise = value) }
+    fun setDenoiseAmount(percent: Int) {
+        val value = percent.coerceIn(0, 100)
+        settings.denoiseAmount = value
+        _state.update { it.copy(denoiseAmount = value) }
     }
 
     fun setMarkerOpacity(percent: Int) {
@@ -1078,7 +1079,7 @@ class ThermalEngine(
             planes,
             settings.isrScale,
             palette,
-            denoise = settings.denoise,
+            denoiseAmount = settings.denoiseAmount,
             scratch = ispScratch,
             sharpenAmount = settings.sharpenAmount,
             spanLowC = if (spanFixed) spanLo else null,
@@ -1113,6 +1114,7 @@ class ThermalEngine(
                 frameGen = settings.frameGenScale,
                 markerOpacity = settings.markerOpacity,
                 sharpenAmount = settings.sharpenAmount,
+                denoiseAmount = settings.denoiseAmount,
                 spanFixed = spanFixed,
                 spanLowC = spanLo,
                 spanHighC = spanHi,
@@ -1175,7 +1177,7 @@ class ThermalEngine(
         mirror = settings.mirror,
         useFahrenheit = settings.useFahrenheit,
         samplePreview = settings.samplePreview,
-        denoise = settings.denoise,
+        denoiseAmount = settings.denoiseAmount,
         rotation = settings.rotation,
         frameGen = settings.frameGenScale,
         markerOpacity = settings.markerOpacity,
