@@ -60,11 +60,18 @@ object SuperResolution {
         palette: Palette,
         denoise: Boolean = false,
         scratch: IspScratch? = null,
+        sharpenAmount: Int = 0,
+        spanLowC: Float? = null,
+        spanHighC: Float? = null,
     ): RenderedFrame {
         val n = planes.pixelCount
         val s = scratch ?: IspScratch()
         s.native(n)
-        TemperatureMaps.normalize(planes.kelvin16, dest = s.tempNorm)
+        if (spanLowC != null && spanHighC != null) {
+            TemperatureMaps.normalizeFixed(planes.kelvin16, spanLowC, spanHighC, dest = s.tempNorm)
+        } else {
+            TemperatureMaps.normalize(planes.kelvin16, dest = s.tempNorm)
+        }
         for (i in 0 until n) {
             s.yNorm[i] = (planes.luminance[i] / 255f).coerceIn(0f, 1f)
         }
@@ -89,6 +96,15 @@ object SuperResolution {
         for (i in 0 until n) {
             val detail = ySrc[i] - s.blurY[i]
             s.fusedNative[i] = (tSrc[i] * 0.82f + ySrc[i] * 0.10f + detail * 0.55f).coerceIn(0f, 1f)
+        }
+        val amount = sharpenAmount.coerceIn(0, 100)
+        if (amount > 0) {
+            boxBlur3(s.fusedNative, planes.width, planes.height, tmp = s.blurTmp, out = s.blurY)
+            val gain = amount / 100f * 1.5f
+            for (i in 0 until n) {
+                val detail = s.fusedNative[i] - s.blurY[i]
+                s.fusedNative[i] = (s.fusedNative[i] + gain * detail).coerceIn(0f, 1f)
+            }
         }
         val factor = scale.factor
         val fused = if (factor == 1) {

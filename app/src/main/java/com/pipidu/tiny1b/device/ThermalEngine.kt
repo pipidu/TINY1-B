@@ -75,6 +75,11 @@ data class EngineState(
     val denoise: Boolean = false,
     val rotation: DisplayRotation = DisplayRotation.DEG_0,
     val frameGen: FrameGenScale = FrameGenScale.OFF,
+    val markerOpacity: Int = 100,
+    val sharpenAmount: Int = 0,
+    val spanFixed: Boolean = false,
+    val spanLowC: Float = 0f,
+    val spanHighC: Float = 40f,
     val shutterMaxSeconds: Int = 30,
     val colorBarMin: Float = 0f,
     val colorBarMax: Float = 40f,
@@ -357,6 +362,61 @@ class ThermalEngine(
     fun setDenoise(value: Boolean) {
         settings.denoise = value
         _state.update { it.copy(denoise = value) }
+    }
+
+    fun setMarkerOpacity(percent: Int) {
+        val value = percent.coerceIn(0, 100)
+        settings.markerOpacity = value
+        _state.update { it.copy(markerOpacity = value) }
+    }
+
+    fun setSharpenAmount(percent: Int) {
+        val value = percent.coerceIn(0, 100)
+        settings.sharpenAmount = value
+        _state.update { it.copy(sharpenAmount = value) }
+    }
+
+    fun setSpanFixed(value: Boolean) {
+        if (value && !settings.spanFixed) {
+            val lo = _state.value.colorBarMin
+            val hi = _state.value.colorBarMax
+            if (hi - lo >= AppSettings.SPAN_MIN_GAP_C) {
+                settings.spanLowC = lo.coerceIn(AppSettings.SPAN_MIN_C, AppSettings.SPAN_MAX_C)
+                settings.spanHighC = hi.coerceIn(AppSettings.SPAN_MIN_C, AppSettings.SPAN_MAX_C)
+            }
+        }
+        settings.spanFixed = value
+        _state.update {
+            it.copy(
+                spanFixed = value,
+                spanLowC = settings.spanLowC,
+                spanHighC = settings.spanHighC,
+                colorBarMin = if (value) settings.spanLowC else it.colorBarMin,
+                colorBarMax = if (value) settings.spanHighC else it.colorBarMax,
+            )
+        }
+    }
+
+    fun setSpanLowC(celsius: Float) {
+        val lo = celsius.coerceIn(AppSettings.SPAN_MIN_C, settings.spanHighC - AppSettings.SPAN_MIN_GAP_C)
+        settings.spanLowC = lo
+        _state.update {
+            it.copy(
+                spanLowC = lo,
+                colorBarMin = if (settings.spanFixed) lo else it.colorBarMin,
+            )
+        }
+    }
+
+    fun setSpanHighC(celsius: Float) {
+        val hi = celsius.coerceIn(settings.spanLowC + AppSettings.SPAN_MIN_GAP_C, AppSettings.SPAN_MAX_C)
+        settings.spanHighC = hi
+        _state.update {
+            it.copy(
+                spanHighC = hi,
+                colorBarMax = if (settings.spanFixed) hi else it.colorBarMax,
+            )
+        }
     }
 
     fun setMeasureEdit(value: Boolean) {
@@ -916,12 +976,18 @@ class ThermalEngine(
         if (liveStatus != DeviceStatus.Live && liveStatus != DeviceStatus.Sample) return
         lastPlanes = planes
         val palette = Palettes.get(settings.paletteId)
+        val spanFixed = settings.spanFixed
+        val spanLo = settings.spanLowC
+        val spanHi = settings.spanHighC
         val rendered = SuperResolution.enhance(
             planes,
             settings.isrScale,
             palette,
             denoise = settings.denoise,
             scratch = ispScratch,
+            sharpenAmount = settings.sharpenAmount,
+            spanLowC = if (spanFixed) spanLo else null,
+            spanHighC = if (spanFixed) spanHi else null,
         )
         val snap = measurement.snapshot(planes)
         val bmp = obtainLiveBitmap(rendered.width, rendered.height)
@@ -940,8 +1006,8 @@ class ThermalEngine(
             frames = 0
             fpsWindowStart = now
         }
-        val minC = snap.stats?.min?.celsius ?: 0f
-        val maxC = snap.stats?.max?.celsius ?: 0f
+        val minC = if (spanFixed) spanLo else (snap.stats?.min?.celsius ?: 0f)
+        val maxC = if (spanFixed) spanHi else (snap.stats?.max?.celsius ?: 0f)
         _state.update {
             it.copy(
                 bitmap = bmp,
@@ -950,6 +1016,11 @@ class ThermalEngine(
                 palette = settings.paletteId,
                 isr = settings.isrScale,
                 frameGen = settings.frameGenScale,
+                markerOpacity = settings.markerOpacity,
+                sharpenAmount = settings.sharpenAmount,
+                spanFixed = spanFixed,
+                spanLowC = spanLo,
+                spanHighC = spanHi,
                 colorBarMin = minC,
                 colorBarMax = maxC,
                 userPointCount = snap.points.count { p -> p.kind == PointKind.USER },
@@ -1012,6 +1083,11 @@ class ThermalEngine(
         denoise = settings.denoise,
         rotation = settings.rotation,
         frameGen = settings.frameGenScale,
+        markerOpacity = settings.markerOpacity,
+        sharpenAmount = settings.sharpenAmount,
+        spanFixed = settings.spanFixed,
+        spanLowC = settings.spanLowC,
+        spanHighC = settings.spanHighC,
         shutterMaxSeconds = settings.shutterMaxSeconds,
     )
 

@@ -122,6 +122,7 @@ fun LiveViewScreen(
                     points = state.measurement.points,
                     fahrenheit = state.useFahrenheit,
                     measureEdit = state.measureEdit,
+                    markerOpacity = state.markerOpacity,
                     onAddOrSelect = onAddOrSelect,
                     onBeginDrag = onBeginDrag,
                     onMoveUser = onMoveUser,

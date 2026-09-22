@@ -55,7 +55,9 @@ import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.core.Palettes
 import com.pipidu.tiny1b.data.AppCache
+import com.pipidu.tiny1b.data.AppSettings
 import com.pipidu.tiny1b.device.EngineState
+import com.pipidu.tiny1b.ui.formatTemp
 import com.pipidu.tiny1b.ui.isHardwareLive
 import com.pipidu.tiny1b.ui.theme.Accent
 import com.pipidu.tiny1b.ui.theme.AccentSoft
@@ -85,6 +87,11 @@ fun SettingsScreen(
     onFahrenheit: (Boolean) -> Unit,
     onSample: (Boolean) -> Unit,
     onDenoise: (Boolean) -> Unit,
+    onMarkerOpacity: (Int) -> Unit,
+    onSharpen: (Int) -> Unit,
+    onSpanFixed: (Boolean) -> Unit,
+    onSpanLow: (Float) -> Unit,
+    onSpanHigh: (Float) -> Unit,
     onPalette: (PaletteId) -> Unit,
     onShutter: () -> Unit,
     onShutterMax: (Int) -> Unit,
@@ -125,6 +132,45 @@ fun SettingsScreen(
                 Text("伪彩色只作用在热成像画面上。", color = Muted, fontSize = 12.sp)
                 Spacer(Modifier.height(8.dp))
                 PalettePicker(selected = state.palette, onSelect = onPalette)
+                Spacer(Modifier.height(8.dp))
+                ToggleRow(
+                    "固定上下限",
+                    "打开后色板按你设定的温度范围上色，超出范围夹到两端。关闭则每帧自动拉伸。",
+                    state.spanFixed,
+                    onSpanFixed,
+                )
+                if (state.spanFixed) {
+                    Text(
+                        "下限  ${formatTemp(state.spanLowC, state.useFahrenheit)}",
+                        color = Ink,
+                        fontSize = 14.sp,
+                    )
+                    Slider(
+                        value = state.spanLowC,
+                        onValueChange = onSpanLow,
+                        valueRange = AppSettings.SPAN_MIN_C..(state.spanHighC - AppSettings.SPAN_MIN_GAP_C),
+                        colors = SliderDefaults.colors(
+                            thumbColor = Accent,
+                            activeTrackColor = Accent,
+                            inactiveTrackColor = SurfaceMuted,
+                        ),
+                    )
+                    Text(
+                        "上限  ${formatTemp(state.spanHighC, state.useFahrenheit)}",
+                        color = Ink,
+                        fontSize = 14.sp,
+                    )
+                    Slider(
+                        value = state.spanHighC,
+                        onValueChange = onSpanHigh,
+                        valueRange = (state.spanLowC + AppSettings.SPAN_MIN_GAP_C)..AppSettings.SPAN_MAX_C,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Accent,
+                            activeTrackColor = Accent,
+                            inactiveTrackColor = SurfaceMuted,
+                        ),
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Text("软件 ISR 超分辨率", color = Ink, fontSize = 14.sp)
                 Text("温度场双线性放大后叠亮度细节。比旧版双三次快很多，测温仍在旋转后的原生网格上取样。", color = Muted, fontSize = 12.sp)
@@ -185,11 +231,45 @@ fun SettingsScreen(
                     state.denoise,
                     onDenoise,
                 )
+                Text(
+                    if (state.sharpenAmount <= 0) "锐化  关闭" else "锐化  ${state.sharpenAmount}%",
+                    color = Ink,
+                    fontSize = 14.sp,
+                )
+                Text(
+                    "默认关闭。只锐化显示用的热图，不改测温用的开尔文网格。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                )
+                Slider(
+                    value = state.sharpenAmount.toFloat(),
+                    onValueChange = { onSharpen(it.toInt()) },
+                    valueRange = 0f..100f,
+                    steps = 19,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Accent,
+                        activeTrackColor = Accent,
+                        inactiveTrackColor = SurfaceMuted,
+                    ),
+                )
             }
             Section("测温") {
                 ToggleRow("中心测温点", "始终显示画面中心温度", state.showCenter, onShowCenter)
                 ToggleRow("最高 / 最低温", "在画面上标注全幅极值位置", state.showMinMax, onShowMinMax)
                 ToggleRow("使用华氏度", "界面温度改为 °F", state.useFahrenheit, onFahrenheit)
+                Text("标注透明度  ${state.markerOpacity}%", color = Ink, fontSize = 14.sp)
+                Text("作用于中心、最高、最低温的十字和标签。自定义测温点保持不透明，方便编辑。", color = Muted, fontSize = 12.sp)
+                Slider(
+                    value = state.markerOpacity.toFloat(),
+                    onValueChange = { onMarkerOpacity(it.toInt()) },
+                    valueRange = 0f..100f,
+                    steps = 19,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Accent,
+                        activeTrackColor = Accent,
+                        inactiveTrackColor = SurfaceMuted,
+                    ),
+                )
             }
             Section("模组") {
                 Text("手动快门", color = Ink, fontSize = 14.sp)

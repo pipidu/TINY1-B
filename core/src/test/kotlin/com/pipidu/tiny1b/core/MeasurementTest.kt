@@ -45,78 +45,24 @@ class MeasurementTest {
     }
 
     @Test
-    fun extremaHoldNearbyFlicker() {
-        var t = 0L
-        val model = MeasurementModel(nowMs = { t })
+    fun extremaFollowCurrentFrameWithoutDwell() {
+        val model = MeasurementModel()
         model.showCenter = false
-        val first = model.snapshot(hotAt(3, 3, celsius = 40f)).hot()
-        assertEquals(3, first.pixelX(8))
-        assertEquals(3, first.pixelY(8))
-        val neighbor = model.snapshot(spots(8, 8, Triple(3, 3, 40f), Triple(5, 3, 40.2f))).hot()
-        assertEquals(3, neighbor.pixelX(8))
-        assertEquals(3, neighbor.pixelY(8))
-    }
-
-    @Test
-    fun extremaDwellThenMoveWhenFarPeakKeepsWinning() {
-        var t = 0L
-        val model = MeasurementModel(nowMs = { t })
-        model.showCenter = false
-        model.snapshot(hotAt(0, 0, celsius = 30f))
-        t = 10L
-        val early = model.snapshot(spots(8, 8, Triple(0, 0, 30f), Triple(7, 7, 30.4f))).hot()
-        assertEquals(0, early.pixelX(8))
-        assertEquals(0, early.pixelY(8))
-        t = 10L + MeasurementModel.EXTREMA_DWELL_MS
-        val moved = model.snapshot(spots(8, 8, Triple(0, 0, 30f), Triple(7, 7, 30.4f))).hot()
-        assertEquals(7, moved.pixelX(8))
-        assertEquals(7, moved.pixelY(8))
-    }
-
-    @Test
-    fun extremaJumpImmediatelyWhenClearlyHotter() {
-        var t = 0L
-        val model = MeasurementModel(nowMs = { t })
-        model.showCenter = false
-        model.snapshot(hotAt(0, 0, celsius = 30f))
-        val jumped = model.snapshot(spots(8, 8, Triple(0, 0, 30f), Triple(7, 7, 32f))).hot()
-        assertEquals(7, jumped.pixelX(8))
-        assertEquals(7, jumped.pixelY(8))
-    }
-
-    @Test
-    fun centerAndUserStayPutWhileExtremaDwell() {
-        var t = 0L
-        val model = MeasurementModel(nowMs = { t })
-        val id = model.addUser(0.25f, 0.5f)!!
-        val a = model.snapshot(hotAt(0, 0, celsius = 30f))
-        t = 50L
-        val b = model.snapshot(spots(8, 8, Triple(0, 0, 30f), Triple(7, 7, 30.3f)))
-        assertEquals(0.5f, a.points.first { it.kind == PointKind.CENTER }.nx)
-        assertEquals(0.5f, b.points.first { it.kind == PointKind.CENTER }.nx)
-        val userA = a.points.first { it.kind == PointKind.USER && it.id == id }
-        val userB = b.points.first { it.kind == PointKind.USER && it.id == id }
-        assertEquals(0.25f, userA.nx)
-        assertEquals(0.25f, userB.nx)
-        assertEquals(0, b.hot().pixelX(8))
+        val first = model.snapshot(hotAt(0, 0, 40f))
+        val hot0 = first.points.first { it.kind == PointKind.HOT }
+        assertEquals(0, (hot0.nx * 7 + 0.5f).toInt())
+        val second = model.snapshot(hotAt(7, 7, 40.2f))
+        val hot1 = second.points.first { it.kind == PointKind.HOT }
+        assertEquals(7, (hot1.nx * 7 + 0.5f).toInt())
+        assertEquals(7, (hot1.ny * 7 + 0.5f).toInt())
     }
 }
 
-private fun hotAt(x: Int, y: Int, celsius: Float, w: Int = 8, h: Int = 8): ThermalPlanes =
-    spots(w, h, Triple(x, y, celsius))
-
-private fun spots(w: Int, h: Int, vararg peaks: Triple<Int, Int, Float>): ThermalPlanes {
+private fun hotAt(x: Int, y: Int, celsius: Float, w: Int = 8, h: Int = 8): ThermalPlanes {
     val room = Tiny1BFormat.kelvin16FromCelsius(20f)
+    val hot = Tiny1BFormat.kelvin16FromCelsius(celsius)
     val lum = FloatArray(w * h) { 10f }
     val kel = IntArray(w * h) { room }
-    for ((x, y, celsius) in peaks) {
-        kel[y * w + x] = Tiny1BFormat.kelvin16FromCelsius(celsius)
-    }
+    kel[y * w + x] = hot
     return ThermalPlanes(w, h, lum, kel)
 }
-
-private fun MeasurementSnapshot.hot(): MeasurePoint = points.first { it.kind == PointKind.HOT }
-
-private fun MeasurePoint.pixelX(width: Int): Int = (nx * (width - 1) + 0.5f).toInt()
-
-private fun MeasurePoint.pixelY(height: Int): Int = (ny * (height - 1) + 0.5f).toInt()

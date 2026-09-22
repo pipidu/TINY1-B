@@ -53,6 +53,26 @@ class AppSettings(context: Context) {
         get() = FrameGenScale.entries.getOrElse(prefs.getInt(KEY_FRAME_GEN, 0)) { FrameGenScale.OFF }
         set(value) { prefs.edit().putInt(KEY_FRAME_GEN, value.ordinal).apply() }
 
+    var markerOpacity: Int
+        get() = prefs.getInt(KEY_MARKER_OPACITY, 100).coerceIn(0, 100)
+        set(value) { prefs.edit().putInt(KEY_MARKER_OPACITY, value.coerceIn(0, 100)).apply() }
+
+    var sharpenAmount: Int
+        get() = prefs.getInt(KEY_SHARPEN, 0).coerceIn(0, 100)
+        set(value) { prefs.edit().putInt(KEY_SHARPEN, value.coerceIn(0, 100)).apply() }
+
+    var spanFixed: Boolean
+        get() = prefs.getBoolean(KEY_SPAN_FIXED, false)
+        set(value) { prefs.edit().putBoolean(KEY_SPAN_FIXED, value).apply() }
+
+    var spanLowC: Float
+        get() = prefs.getFloat(KEY_SPAN_LOW, 0f).coerceIn(SPAN_MIN_C, SPAN_MAX_C)
+        set(value) { prefs.edit().putFloat(KEY_SPAN_LOW, value.coerceIn(SPAN_MIN_C, SPAN_MAX_C)).apply() }
+
+    var spanHighC: Float
+        get() = prefs.getFloat(KEY_SPAN_HIGH, 40f).coerceIn(SPAN_MIN_C, SPAN_MAX_C)
+        set(value) { prefs.edit().putFloat(KEY_SPAN_HIGH, value.coerceIn(SPAN_MIN_C, SPAN_MAX_C)).apply() }
+
     companion object {
         private const val KEY_PALETTE = "palette"
         private const val KEY_ISR = "isr"
@@ -65,5 +85,13 @@ class AppSettings(context: Context) {
         private const val KEY_DENOISE = "denoise"
         private const val KEY_ROTATION = "rotation"
         private const val KEY_FRAME_GEN = "frame_gen"
+        private const val KEY_MARKER_OPACITY = "marker_opacity"
+        private const val KEY_SHARPEN = "sharpen"
+        private const val KEY_SPAN_FIXED = "span_fixed"
+        private const val KEY_SPAN_LOW = "span_low_c"
+        private const val KEY_SPAN_HIGH = "span_high_c"
+        const val SPAN_MIN_C = -20f
+        const val SPAN_MAX_C = 200f
+        const val SPAN_MIN_GAP_C = 1f
     }
 }

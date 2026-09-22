@@ -57,4 +57,47 @@ class SuperResolutionTest {
         val back = Tiny1BFormat.celsiusFromKelvin16(raw)
         assertTrue(kotlin.math.abs(back - 25f) < 0.1f)
     }
+
+    @Test
+    fun fixedSpanClampsOutsideRangeToPaletteEnds() {
+        val lo = Tiny1BFormat.kelvin16FromCelsius(10f)
+        val hi = Tiny1BFormat.kelvin16FromCelsius(20f)
+        val mid = Tiny1BFormat.kelvin16FromCelsius(15f)
+        val below = Tiny1BFormat.kelvin16FromCelsius(0f)
+        val above = Tiny1BFormat.kelvin16FromCelsius(40f)
+        val out = TemperatureMaps.normalizeFixed(intArrayOf(below, lo, mid, hi, above), 10f, 20f)
+        assertEquals(0f, out[0], 1e-4f)
+        assertEquals(0f, out[1], 1e-4f)
+        assertEquals(1f, out[3], 1e-4f)
+        assertEquals(1f, out[4], 1e-4f)
+        assertTrue(out[2] in 0.4f..0.6f)
+    }
+
+    @Test
+    fun sharpenDoesNotMutateNativeKelvin() {
+        val planes = FrameParser.parseUvcFrame(SyntheticScene.uvcFrame())
+        val original = planes.kelvin16.copyOf()
+        SuperResolution.enhance(
+            planes,
+            IsrScale.OFF,
+            Palettes.get(PaletteId.IRONBOW),
+            sharpenAmount = 80,
+        )
+        assertTrue(original.contentEquals(planes.kelvin16))
+    }
+
+    @Test
+    fun fixedSpanEnhanceStillLeavesNativeGridAlone() {
+        val planes = FrameParser.parseUvcFrame(SyntheticScene.uvcFrame())
+        val original = planes.kelvin16.copyOf()
+        val rendered = SuperResolution.enhance(
+            planes,
+            IsrScale.OFF,
+            Palettes.get(PaletteId.IRONBOW),
+            spanLowC = 0f,
+            spanHighC = 30f,
+        )
+        assertTrue(original.contentEquals(rendered.native.kelvin16))
+        assertTrue(rendered.argb.isNotEmpty())
+    }
 }

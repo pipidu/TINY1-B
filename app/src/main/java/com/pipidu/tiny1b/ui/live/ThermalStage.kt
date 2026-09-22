@@ -42,6 +42,7 @@ fun ThermalStage(
     points: List<MeasurePoint>,
     fahrenheit: Boolean,
     measureEdit: Boolean,
+    markerOpacity: Int = 100,
     onAddOrSelect: (Float, Float) -> Unit,
     onBeginDrag: (Float, Float) -> Long?,
     onMoveUser: (Long, Float, Float) -> Unit,
@@ -106,10 +107,16 @@ fun ThermalStage(
             points.forEach { point ->
                 val x = fit.left + point.nx * fit.width
                 val y = fit.top + point.ny * fit.height
+                val alpha = if (point.kind == PointKind.USER) {
+                    1f
+                } else {
+                    (markerOpacity / 100f).coerceIn(0f, 1f)
+                }
+                if (alpha <= 0.01f && point.kind != PointKind.USER) return@forEach
                 val color = when (point.kind) {
-                    PointKind.HOT -> Hot
-                    PointKind.COLD -> Cold
-                    PointKind.CENTER -> Color(0xFFF8FAFC)
+                    PointKind.HOT -> Hot.copy(alpha = alpha)
+                    PointKind.COLD -> Cold.copy(alpha = alpha)
+                    PointKind.CENTER -> Color(0xFFF8FAFC).copy(alpha = alpha)
                     PointKind.USER -> if (point.selected) Color(0xFFFFD36A) else Color(0xFFE8D5B5)
                 }
                 val arm = 14f
@@ -128,7 +135,7 @@ fun ThermalStage(
                 val layout = measurer.measure(
                     label,
                     style = TextStyle(
-                        color = Color.White,
+                        color = Color.White.copy(alpha = alpha),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                     ),
@@ -136,7 +143,7 @@ fun ThermalStage(
                 val tx = (x + 10f).coerceAtMost(size.width - layout.size.width - 8f)
                 val ty = (y - layout.size.height - 8f).coerceAtLeast(8f)
                 drawRect(
-                    color = Color(0xCC07080D),
+                    color = Color(0xCC07080D).copy(alpha = 0.8f * alpha),
                     topLeft = Offset(tx - 6f, ty - 3f),
                     size = Size(layout.size.width + 12f, layout.size.height + 6f),
                 )

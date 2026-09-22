@@ -66,6 +66,26 @@ object TemperatureMaps {
         return out
     }
 
+    /**
+     * Map Kelvin-16 into 0..1 using a user-fixed °C range. Values outside
+     * clamp to the palette ends. Does not mutate [kelvin16].
+     */
+    fun normalizeFixed(
+        kelvin16: IntArray,
+        lowCelsius: Float,
+        highCelsius: Float,
+        dest: FloatArray? = null,
+    ): FloatArray {
+        val lo = Tiny1BFormat.kelvin16FromCelsius(lowCelsius)
+        val hi = Tiny1BFormat.kelvin16FromCelsius(highCelsius)
+        val range = (hi - lo).coerceAtLeast(1)
+        val out = if (dest != null && dest.size == kelvin16.size) dest else FloatArray(kelvin16.size)
+        for (i in kelvin16.indices) {
+            out[i] = ((kelvin16[i] - lo).toFloat() / range).coerceIn(0f, 1f)
+        }
+        return out
+    }
+
     fun percentileBounds(values: IntArray, low: Float, high: Float): Pair<Int, Int> {
         val bins = IntArray(1024)
         var minV = Int.MAX_VALUE
