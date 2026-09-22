@@ -56,6 +56,56 @@ class FrameGenerationTest {
         assertEquals(0, FrameGenScale.OFF.extraFrames)
         assertEquals(1, FrameGenScale.X2.extraFrames)
         assertEquals(2, FrameGenScale.X3.extraFrames)
-        assertTrue(FrameGeneration.FAST_NATIVE_MS in 20L..50L)
+    }
+
+    @Test
+    fun pacedExtrasAt25FpsThreeXOn120HzIsTwo() {
+        assertEquals(
+            2,
+            FrameGeneration.pacedExtraFrames(2, 40L, 120f),
+        )
+        assertEquals(1f / 3f, FrameGeneration.blendT(1, 2), 1e-4f)
+        assertEquals(2f / 3f, FrameGeneration.blendT(2, 2), 1e-4f)
+    }
+
+    @Test
+    fun pacedExtrasAt25FpsTwoXIsOne() {
+        assertEquals(1, FrameGeneration.pacedExtraFrames(1, 40L, 120f))
+        assertEquals(0.5f, FrameGeneration.blendT(1, 1), 1e-4f)
+    }
+
+    @Test
+    fun pacedExtrasCapsToRefreshOn60Hz() {
+        // 40ms / 16.67ms = 2.4 slots → 1 extra (50 fps), not 2 (75 > 60).
+        assertEquals(1, FrameGeneration.pacedExtraFrames(2, 40L, 60f))
+    }
+
+    @Test
+    fun pacedExtrasSkipsWhenNativeAlreadyAtRefresh() {
+        assertEquals(0, FrameGeneration.pacedExtraFrames(2, 16L, 60f))
+        assertEquals(0, FrameGeneration.pacedExtraFrames(2, 8L, 120f))
+    }
+
+    @Test
+    fun pacedExtrasDoesNotSkip40msNative() {
+        assertTrue(FrameGeneration.pacedExtraFrames(2, 40L, 120f) >= 2)
+        assertTrue(FrameGeneration.pacedExtraFrames(1, 40L, 60f) >= 1)
+    }
+
+    @Test
+    fun dueStepsAt25FpsThreeXAreEqualThirdsThenNative() {
+        assertEquals(0, FrameGeneration.dueDisplayStep(0L, 40L, 2))
+        assertEquals(0, FrameGeneration.dueDisplayStep(12L, 40L, 2))
+        assertEquals(1, FrameGeneration.dueDisplayStep(13L, 40L, 2))
+        assertEquals(2, FrameGeneration.dueDisplayStep(26L, 40L, 2))
+        assertEquals(3, FrameGeneration.dueDisplayStep(40L, 40L, 2))
+        assertEquals(3, FrameGeneration.dueDisplayStep(50L, 40L, 2))
+    }
+
+    @Test
+    fun dueStepsAt25FpsTwoXAreHalfThenNative() {
+        assertEquals(0, FrameGeneration.dueDisplayStep(0L, 40L, 1))
+        assertEquals(1, FrameGeneration.dueDisplayStep(20L, 40L, 1))
+        assertEquals(2, FrameGeneration.dueDisplayStep(40L, 40L, 1))
     }
 }

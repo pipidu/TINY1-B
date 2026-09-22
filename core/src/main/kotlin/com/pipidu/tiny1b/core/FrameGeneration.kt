@@ -8,6 +8,10 @@ package com.pipidu.tiny1b.core
  * History is capped at two native planes plus one reusable blend destination
  * (see the live engine). Measurement samples the blended Kelvin grid so
  * markers move smoothly with the extra frames.
+ *
+ * Pacing: extra blends are scheduled **across** the native period (Handler /
+ * Choreographer), not dumped when the next UVC plane arrives. 2× of 25 fps
+ * → ~50 display fps; 3× of 25 fps → ~75, capped at the panel refresh.
  */
 enum class FrameGenScale(val labelZh: String, val extraFrames: Int) {
     OFF("关闭", 0),
@@ -16,8 +20,50 @@ enum class FrameGenScale(val labelZh: String, val extraFrames: Int) {
 }
 
 object FrameGeneration {
-    /** Skip interpolation when the module is already sending frames this fast. */
-    const val FAST_NATIVE_MS = 35L
+    const val DEFAULT_NATIVE_MS = 40L
+
+    /**
+     * How many extra (non-native) display frames to emit per native interval.
+     * Never skip a ~25 fps (40 ms) module. Skip only when native fps already
+     * meets the panel refresh. Cap so equal time steps are not faster than vsync.
+     */
+    fun pacedExtraFrames(
+        requestedExtra: Int,
+        nativeIntervalMs: Long,
+        refreshHz: Float,
+    ): Int {
+        if (requestedExtra <= 0 || nativeIntervalMs <= 0L) return 0
+        val hz = refreshHz.coerceIn(30f, 120f)
+        val nativeFps = 1000f / nativeIntervalMs.toFloat()
+        if (nativeFps >= hz - 0.5f) return 0
+        val minStepMs = 1000f / hz
+        val maxSlots = (nativeIntervalMs / minStepMs).toInt().coerceAtLeast(1)
+        val slots = (requestedExtra + 1).coerceAtMost(maxSlots)
+        return (slots - 1).coerceAtLeast(0)
+    }
+
+    fun blendT(stepIndex: Int, extras: Int): Float {
+        val total = extras + 1
+        if (total <= 1) return 1f
+        return stepIndex.coerceIn(1, extras).toFloat() / total.toFloat()
+    }
+
+    /**
+     * Which equally spaced display step is due at [elapsedMs] into a native
+     * period. `0` = nothing yet; `1..extras` = blend k of extras; `extras+1` =
+     * show the new native plane.
+     */
+    fun dueDisplayStep(elapsedMs: Long, nativeIntervalMs: Long, extras: Int): Int {
+        val total = extras + 1
+        if (extras <= 0 || nativeIntervalMs <= 0L) return total.coerceAtLeast(1)
+        if (elapsedMs >= nativeIntervalMs) return total
+        var due = 0
+        for (k in 1..total) {
+            val at = nativeIntervalMs * k / total
+            if (elapsedMs >= at) due = k else break
+        }
+        return due
+    }
 
     fun blend(
         prev: ThermalPlanes,

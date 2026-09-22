@@ -13,8 +13,8 @@ android {
         minSdk = 26
         // Match the vendor demo. flags=0 PendingIntent only works with targetSdk < 31.
         targetSdk = 26
-        versionCode = 18
-        versionName = "1.0.17"
+        versionCode = 19
+        versionName = "1.0.18"
         ndk {
             abiFilters += "arm64-v8a"
         }

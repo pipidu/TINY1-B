@@ -10,10 +10,13 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.Message
 import android.os.SystemClock
 import android.util.Log
+import android.view.Choreographer
+import android.view.WindowManager
 import com.pipidu.tiny1b.capture.CaptureStore
 import com.pipidu.tiny1b.capture.ThermalRecorder
 import com.pipidu.tiny1b.core.DisplayRotation
@@ -104,9 +107,9 @@ class ThermalEngine(
     private val running = AtomicBoolean(false)
     private val activityResumed = AtomicBoolean(false)
     private val latestFrame = AtomicReference<ByteArray?>()
-    private val frameLock = Object()
     private val cameraLock = Any()
-    private var worker: Thread? = null
+    private var ispThread: HandlerThread? = null
+    private var ispHandler: Handler? = null
     private var sampleThread: Thread? = null
     @Volatile private var previewing = false
     @Volatile private var nativeLoadFailed = false
@@ -130,10 +133,14 @@ class ThermalEngine(
     @Volatile private var prevHold: ThermalPlanes? = null
     @Volatile private var currHold: ThermalPlanes? = null
     @Volatile private var blendHold: ThermalPlanes? = null
-    private val pendingInterp = AtomicInteger(0)
-    @Volatile private var interpSliceMs = 20L
+    @Volatile private var pacingActive = false
+    @Volatile private var shownCurr = true
+    @Volatile private var scheduledExtras = 0
+    @Volatile private var nextBlendK = 1
+    @Volatile private var pairOriginMs = 0L
+    @Volatile private var pairDtMs = FrameGeneration.DEFAULT_NATIVE_MS
     private var lastNativeAt = 0L
-    @Volatile private var nativeIntervalMs = 45L
+    @Volatile private var nativeIntervalMs = FrameGeneration.DEFAULT_NATIVE_MS
 
     private val _state = MutableStateFlow(readSettings(EngineState()))
     val state: StateFlow<EngineState> = _state.asStateFlow()
@@ -147,7 +154,7 @@ class ThermalEngine(
         System.arraycopy(frame, 0, uvcScratch[idx], 0, Tiny1BFormat.UVC_FRAME_BYTES)
         uvcWrite.set(idx)
         latestFrame.set(uvcScratch[idx])
-        synchronized(frameLock) { frameLock.notify() }
+        postNativeAvailable()
     }
 
     private val usbHandler = object : Handler(Looper.getMainLooper()) {
@@ -216,10 +223,7 @@ class ThermalEngine(
         runCatching { stopRecordingInternal(null) }
         synchronized(cameraLock) { destroyCameraLocked() }
         stopSample()
-        synchronized(frameLock) { frameLock.notifyAll() }
-        worker?.join(500)
-        worker = null
-        pendingInterp.set(0)
+        stopWorker()
         prevHold = null
         currHold = null
         blendHold = null
@@ -313,8 +317,15 @@ class ThermalEngine(
 
     fun setFrameGen(scale: FrameGenScale) {
         settings.frameGenScale = scale
-        if (scale == FrameGenScale.OFF) pendingInterp.set(0)
         _state.update { it.copy(frameGen = scale) }
+        if (scale == FrameGenScale.OFF) {
+            val handler = ispHandler
+            if (handler != null) {
+                handler.post { cancelPacing(showHeldNative = true) }
+            } else {
+                cancelPacing(showHeldNative = false)
+            }
+        }
     }
 
     fun setShowCenter(value: Boolean) {
@@ -662,11 +673,11 @@ class ThermalEngine(
     }
 
     private fun enterWaitingUi(detail: String) {
+        previewing = false
         latestFrame.set(null)
         lastPlanes = null
         prevHold = null
-        pendingInterp.set(0)
-        previewing = false
+        cancelPacing(showHeldNative = false)
         usbHandler.removeCallbacks(presenceCheckRunnable)
         runCatching { stopRecordingInternal("模组已断开，录像已停止") }
         _state.update {
@@ -679,7 +690,6 @@ class ThermalEngine(
                 measureEdit = false,
             )
         }
-        synchronized(frameLock) { frameLock.notifyAll() }
     }
 
     private fun ensureCameraLocked(activity: Activity): Boolean {
@@ -817,33 +827,113 @@ class ThermalEngine(
     }
 
     private fun startWorker() {
-        if (worker?.isAlive == true) return
-        worker = thread(name = "tiny1b-isp", isDaemon = true) {
-            Thread.currentThread().uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { t, e ->
-                onUncaught(t, e)
-            }
-            while (running.get()) {
-                val frame = latestFrame.getAndSet(null)
-                if (frame != null) {
-                    val busy = uvcScratch.indexOfFirst { it === frame }
-                    if (busy >= 0) uvcBusy.set(busy)
-                    try {
-                        ingestNativeFrame(frame)
-                    } catch (error: Throwable) {
-                        Log.e(TAG, "processFrame", error)
-                    } finally {
-                        uvcBusy.set(-1)
+        if (ispThread?.isAlive == true) return
+        val thread = HandlerThread("tiny1b-isp")
+        thread.uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { t, e ->
+            onUncaught(t, e)
+        }
+        thread.start()
+        ispThread = thread
+        ispHandler = object : Handler(thread.looper) {
+            override fun handleMessage(msg: Message) {
+                when (msg.what) {
+                    MSG_NATIVE -> {
+                        val frame = latestFrame.getAndSet(null) ?: return
+                        val busy = uvcScratch.indexOfFirst { it === frame }
+                        if (busy >= 0) uvcBusy.set(busy)
+                        try {
+                            ingestNativeFrame(frame)
+                        } catch (error: Throwable) {
+                            Log.e(TAG, "processFrame", error)
+                        } finally {
+                            uvcBusy.set(-1)
+                        }
                     }
-                    continue
-                }
-                if (emitInterpolatedOrWait()) continue
-                synchronized(frameLock) {
-                    if (latestFrame.get() == null) {
-                        runCatching { frameLock.wait(200) }
+                    MSG_VSYNC -> {
+                        if (latestFrame.get() != null) return
+                        try {
+                            emitDuePacedFrame()
+                        } catch (error: Throwable) {
+                            Log.e(TAG, "frameGen", error)
+                        }
                     }
                 }
             }
         }
+    }
+
+    private fun stopWorker() {
+        cancelPacing(showHeldNative = false)
+        val handler = ispHandler
+        ispHandler = null
+        handler?.removeCallbacksAndMessages(null)
+        val thread = ispThread
+        ispThread = null
+        thread?.quitSafely()
+        thread?.join(500)
+    }
+
+    private fun postNativeAvailable() {
+        val handler = ispHandler ?: return
+        if (!handler.hasMessages(MSG_NATIVE)) {
+            handler.sendEmptyMessage(MSG_NATIVE)
+        }
+    }
+
+    private val vsyncCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!pacingActive) return
+            val handler = ispHandler
+            if (handler != null && !handler.hasMessages(MSG_VSYNC)) {
+                handler.sendEmptyMessage(MSG_VSYNC)
+            }
+            if (pacingActive) {
+                Choreographer.getInstance().postFrameCallback(this)
+            }
+        }
+    }
+
+    private fun startPacing() {
+        if (pacingActive) return
+        pacingActive = true
+        usbHandler.post {
+            if (pacingActive) {
+                Choreographer.getInstance().postFrameCallback(vsyncCallback)
+            }
+        }
+    }
+
+    private fun stopPacing() {
+        pacingActive = false
+        usbHandler.post {
+            Choreographer.getInstance().removeFrameCallback(vsyncCallback)
+        }
+        ispHandler?.removeMessages(MSG_VSYNC)
+    }
+
+    private fun cancelPacing(showHeldNative: Boolean) {
+        stopPacing()
+        scheduledExtras = 0
+        nextBlendK = 1
+        val curr = currHold
+        if (showHeldNative && curr != null && !shownCurr) {
+            shownCurr = true
+            processPlanes(curr)
+        } else {
+            shownCurr = true
+        }
+    }
+
+    private fun displayRefreshHz(): Float {
+        val hz = runCatching {
+            if (Build.VERSION.SDK_INT >= 30) {
+                (activity?.display ?: appContext.display)?.refreshRate
+            } else {
+                @Suppress("DEPRECATION")
+                appContext.getSystemService(WindowManager::class.java)?.defaultDisplay?.refreshRate
+            }
+        }.getOrNull() ?: 60f
+        return hz.coerceIn(30f, 120f)
     }
 
     private fun startSample() {
@@ -865,7 +955,7 @@ class ThermalEngine(
                     SyntheticScene.uvcFrame(t = t, dest = buf)
                     latestFrame.set(buf)
                     slot = 1 - slot
-                    synchronized(frameLock) { frameLock.notify() }
+                    postNativeAvailable()
                     t += 0.07f
                     Thread.sleep(45)
                 }
@@ -882,35 +972,36 @@ class ThermalEngine(
         sampleThread = null
     }
 
-    private fun emitInterpolatedOrWait(): Boolean {
-        val extra = settings.frameGenScale.extraFrames
+    private fun emitDuePacedFrame() {
+        if (!pacingActive) return
+        val extras = scheduledExtras
         val prev = prevHold
         val curr = currHold
-        if (extra <= 0 || prev == null || curr == null) return false
-        if (prev.width != curr.width || prev.height != curr.height) return false
-        if (pendingInterp.get() <= 0) return false
-        synchronized(frameLock) {
-            if (latestFrame.get() == null) {
-                runCatching { frameLock.wait(interpSliceMs.toLong()) }
+        if (extras <= 0 || prev == null || curr == null) {
+            if (curr != null && !shownCurr) {
+                shownCurr = true
+                processPlanes(curr)
             }
+            stopPacing()
+            return
         }
-        if (latestFrame.get() != null) return true
-        val remaining = pendingInterp.getAndDecrement()
-        if (remaining <= 0) {
-            pendingInterp.set(0)
-            return false
+        val elapsed = SystemClock.elapsedRealtime() - pairOriginMs
+        val due = FrameGeneration.dueDisplayStep(elapsed, pairDtMs, extras)
+        if (due <= 0) return
+        if (!shownCurr && due >= extras + 1) {
+            shownCurr = true
+            nextBlendK = extras + 1
+            processPlanes(curr)
+            stopPacing()
+            return
         }
-        val total = extra + 1
-        val k = total - remaining + 1
-        val t = k.toFloat() / total.toFloat()
-        try {
-            val blended = FrameGeneration.blend(prev, curr, t, blendHold)
+        if (nextBlendK <= extras && due >= nextBlendK) {
+            val k = due.coerceAtMost(extras)
+            val blended = FrameGeneration.blend(prev, curr, FrameGeneration.blendT(k, extras), blendHold)
             blendHold = blended
+            nextBlendK = k + 1
             processPlanes(blended)
-        } catch (error: Throwable) {
-            Log.e(TAG, "frameGen", error)
         }
-        return true
     }
 
     private fun ingestNativeFrame(frame: ByteArray) {
@@ -926,29 +1017,33 @@ class ThermalEngine(
         parseLum = parsed.luminance
         parseKel = parsed.kelvin16
         val oriented = FrameParser.applyOrientation(parsed, settings.rotation, settings.mirror)
-        val extra = settings.frameGenScale.extraFrames
+        val requested = settings.frameGenScale.extraFrames
+        val extras = FrameGeneration.pacedExtraFrames(requested, nativeIntervalMs, displayRefreshHz())
         val oldCurr = currHold
-        val useGen = extra > 0 &&
-            nativeIntervalMs >= FrameGeneration.FAST_NATIVE_MS &&
+        val useGen = extras > 0 &&
             oldCurr != null &&
             oldCurr.width == oriented.width &&
             oldCurr.height == oriented.height
         if (useGen) {
+            ispHandler?.removeMessages(MSG_VSYNC)
+            if (!shownCurr) {
+                shownCurr = true
+                processPlanes(oldCurr)
+            }
             val recycled = prevHold
             prevHold = oldCurr
             currHold = copyPlanesInto(oriented, if (recycled !== oldCurr) recycled else null)
-            lastPlanes = currHold
-            pendingInterp.set(extra)
-            interpSliceMs = (nativeIntervalMs / (extra + 1L)).coerceIn(8L, 80L)
-            val firstT = 1f / (extra + 1f)
-            val blended = FrameGeneration.blend(prevHold!!, currHold!!, firstT, blendHold)
-            blendHold = blended
-            processPlanes(blended)
+            pairOriginMs = now
+            pairDtMs = nativeIntervalMs
+            scheduledExtras = extras
+            nextBlendK = 1
+            shownCurr = false
+            startPacing()
         } else {
+            cancelPacing(showHeldNative = false)
             prevHold = null
-            pendingInterp.set(0)
             currHold = copyPlanesInto(oriented, currHold)
-            lastPlanes = currHold
+            shownCurr = true
             processPlanes(currHold!!)
         }
     }
@@ -1061,7 +1156,7 @@ class ThermalEngine(
         val live = _state.value.status == DeviceStatus.Live || _state.value.status == DeviceStatus.Sample
         if (live) {
             prevHold = null
-            pendingInterp.set(0)
+            cancelPacing(showHeldNative = false)
         } else {
             recycleLiveBitmaps(except = _state.value.bitmap, forceAll = false)
             prevHold = null
@@ -1140,6 +1235,8 @@ class ThermalEngine(
         private const val PRESENCE_MS = 1000L
         private const val UVC_SCRATCH = 3
         private const val LIVE_BITMAPS = 3
+        private const val MSG_NATIVE = 1
+        private const val MSG_VSYNC = 2
 
         private fun formatMmSs(totalSec: Int): String {
             val m = totalSec / 60

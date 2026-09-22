@@ -16,7 +16,7 @@ The product **is** the Infiray Android demo USB/JNI camera path, with this repo�
 
 ## Current status
 
-On `main`: **1.0.17** (`versionCode` **18**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off). **锐化** (0–100, default off) on the display fuse only. **固定上下限** locks the palette to a user °C range. Marker opacity for 中心/最高/最低. Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). Photo / record hints overlay the live image (no dock layout shift). Min/max markers follow the current frame extrema (1.0.16 dwell reverted). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
+On `main`: **1.0.18** (`versionCode` **19**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off) is **vsync-paced** across the native interval (not a burst when the next UVC plane arrives). **锐化** (0–100, default off) on the display fuse only. **固定上下限** locks the palette to a user °C range. Marker opacity for 中心/最高/最低. Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). Photo / record hints overlay the live image (no dock layout shift). Min/max markers follow the current frame extrema (1.0.16 dwell reverted). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
 
 ## Current architecture
 
@@ -76,13 +76,28 @@ Do **not** add back: `UsbHostController`, `UvcCapture`, `Usbfs`, `Tiny1BCommands
 
 Vendor demo has **no** interpolate / synthesize UI — native UVC fps only. Product setting (default **关闭**):
 
-| Chip | Extra display frames per native interval |
-|------|------------------------------------------|
-| 关闭 | 0 (show each native plane immediately) |
-| 2× 插帧 | 1 (blend at 1/2, then the new native plane) |
-| 3× 插帧 | 2 (blend at 1/3, 2/3, then the new native plane) |
+| Chip | Extra display frames per native interval | 25 fps native (~40 ms) |
+|------|------------------------------------------|-------------------------|
+| 关闭 | 0 (show each native plane immediately) | ~25 fps |
+| 2× 插帧 | 1 blend at 1/2, then the new native plane | ~50 fps |
+| 3× 插帧 | 2 blends at 1/3 and 2/3, then the new native plane | ~75 fps, **capped at panel refresh** |
 
-One-frame delay: extra frames are synthesized from the **last two** native `ThermalPlanes` (Y + Kelvin-16 lerp) after the newer frame arrives. History is **two native holds + one blend destination**, never a growing list. If the native interval is already **< 35 ms**, interpolation is skipped so a fast module is not charged extra ISP work. Measurement samples the **blended** Kelvin grid so markers move with the extra frames. Display fps includes interpolated frames.
+### How displayed fps is produced
+
+1. USB/JNI `onFrame` is unchanged: copy into the 3-slot UVC scratch and post **one** coalesced `MSG_NATIVE` to `HandlerThread` `tiny1b-isp`. No interpolations run on the UVC callback.
+2. Native plane N is shown immediately (1-frame delay needs a pair). When N+1 arrives, the engine holds **two** native `ThermalPlanes` (`prev` = N, `curr` = N+1) plus one reusable blend destination (same 1.0.15 caps).
+3. Playback of that pair is **scheduled across the following native period**, not dumped when N+1 arrives:
+   - Main-thread `Choreographer` ticks at vsync and posts **at most one** `MSG_VSYNC` (never a burst).
+   - ISP handler emits **one** display frame per vsync: the due blend, or the native plane at the end of the interval.
+   - Equal time steps: for period `dt` and `extras` blends, frames land at `dt/(extras+1)`, `2dt/(extras+1)`, …, `dt`.
+4. `FrameGeneration.pacedExtraFrames(requested, nativeMs, refreshHz)`:
+   - **Do not** skip a ~25 fps module (40 ms). The old `< 35 ms` skip is gone.
+   - Skip extras only when native fps already meets the panel refresh (or is within 0.5 fps of it).
+   - Cap extras so steps are not faster than vsync: 3× of 25 fps on a **60 Hz** panel → 1 extra (~50 fps); on **90/120 Hz** → 2 extras (~75 fps).
+5. The top-chrome fps counter counts **displayed** frames (`processPlanes`, native + blends). Measurement samples the **currently displayed** Kelvin grid (blended when a blend is on screen).
+6. If the next native arrives before the pair is finished, unshown native `curr` is flushed once and a new pair starts (late blends are dropped, not burst). Turning 帧生成 off, unplug, stop, or 清除缓存 while live cancels the Choreographer schedule.
+
+USB/JNI open path is unchanged. ISR cost can still limit fps below the schedule (one ISP job at a time); the scheduler is what makes 2×/3× hold a cadence instead of ~36 fps from a burst.
 
 ## Cache (1.0.15)
 
@@ -140,7 +155,7 @@ Settings → 画面 → **固定上下限**. Off (default): percentile AGC each 
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.17** (`versionCode` **18**).
+- Current: **1.0.18** (`versionCode` **19**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -163,6 +178,7 @@ Settings → 画面 → **固定上下限**. Off (default): percentile AGC each 
 - **1.0.15**: Settings **帧生成** (software 2×/3× temporal blend; demo has none; default off). Dock **快门 / 拍照 / 录像 / 测温**; 快门 and 测温 grayed without a live Tiny1-B. Cap/recycle live bitmaps (3), UVC scratch (3), ISR scratch, frame-gen history (2+1), sample UVC (2), update APKs (1). Settings **清除缓存**. USB/JNI path unchanged.
 - **1.0.16**: min/max markers dwell 400 ms (4 px hold, 1.0 °C immediate jump) so they stop flickering; photo/record hints overlay the live image and no longer shift the dock. USB/JNI unchanged.
 - **1.0.17**: revert min/max dwell (markers follow the live extrema again). Settings: 标注透明度 (中心/最高/最低), 锐化 0–100 display-only, 固定上下限 palette span. USB/JNI unchanged.
+- **1.0.18**: 帧生成 is vsync-paced (HandlerThread + Choreographer) across the native period. 2× of 25 fps → ~50; 3× of 25 fps → ~75 capped at refresh. 40 ms native is not skipped. USB/JNI unchanged.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk
