@@ -134,6 +134,16 @@ fun LiveViewScreen(
                     onRetry = onRetry,
                 )
             }
+            val hint = state.captureHint
+            if (!hint.isNullOrBlank()) {
+                CaptureHintOverlay(
+                    text = hint,
+                    recording = state.recording,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                )
+            }
         }
 
         BottomChrome(
@@ -278,10 +288,6 @@ private fun BottomChrome(
         if (showingImage) {
             LegendStrip(state = state)
         }
-        val hint = state.captureHint
-        if (!hint.isNullOrBlank()) {
-            CaptureHintBar(text = hint, recording = state.recording)
-        }
         if (state.measureEdit && hardware) {
             MeasureHintBar(
                 count = state.userPointCount,
@@ -365,17 +371,24 @@ private fun DockItem(
 }
 
 @Composable
-private fun CaptureHintBar(text: String, recording: Boolean) {
+private fun CaptureHintOverlay(text: String, recording: Boolean, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .shadow(8.dp, RoundedCornerShape(14.dp), clip = false)
             .clip(RoundedCornerShape(14.dp))
-            .background(if (recording) Hot.copy(alpha = 0.10f) else SurfaceMuted)
+            .background(if (recording) Hot.copy(alpha = 0.92f) else Surface)
+            .border(1.dp, Outline, RoundedCornerShape(14.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
-        Text(text, color = if (recording) Hot else Ink, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(
+            text,
+            color = if (recording) Color.White else Ink,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 

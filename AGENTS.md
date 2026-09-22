@@ -16,7 +16,7 @@ The product **is** the Infiray Android demo USB/JNI camera path, with this repo�
 
 ## Current status
 
-On `main`: **1.0.15** (`versionCode` **16**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off). Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
+On `main`: **1.0.16** (`versionCode` **17**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off). Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). Photo / record hints overlay the live image (no dock layout shift). Min/max markers dwell **400 ms** (or jump immediately at ≥ **1.0 °C**). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
 
 ## Current architecture
 
@@ -113,11 +113,11 @@ Settings → 画面 → **画面旋转** (0° / 90° / 180° / 270°). Stored in
 
 ## UI chrome
 
-Column: top card (title / fps / status / 设置) → **live image (fully visible)** → bottom chrome. The temperature legend (min · palette bar · max) is a **strip below the image**, never overlaid on pixels and never in the top card. Dock in that same bottom chrome: **快门 / 拍照 / 录像 / 测温**. 色板 / ISR / 帧生成 / 旋转 belong in Settings. Do not put a vertical bar on the right of the live image. 快门 and 测温 are grayed unless a Tiny1-B is Live; 拍照 / 录像 stay enabled for sample preview as well as Live.
+Column: top card (title / fps / status / 设置) → **live image (fully visible)** → bottom chrome. The temperature legend (min · palette bar · max) is a **strip below the image**, never overlaid on pixels and never in the top card. Dock in that same bottom chrome: **快门 / 拍照 / 录像 / 测温**. Photo / record `captureHint` is a **floating overlay** on the image (snackbar), not a row inside the dock — the image, legend, and dock must not shift. 色板 / ISR / 帧生成 / 旋转 belong in Settings. Do not put a vertical bar on the right of the live image. 快门 and 测温 are grayed unless a Tiny1-B is Live; 拍照 / 录像 stay enabled for sample preview as well as Live.
 
 ## Capture
 
-Dock **快门 / 拍照 / 录像 / 测温** (with the legend strip in the same bottom chrome). JPEG and H.264 MP4 (no mic) go to the system album (`Pictures/TINY1-B`, `Movies/TINY1-B`) via MediaStore on API 29+; API 26–28 uses `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion 28`) and a media scan. Unplug stops an in-progress recording. Sample preview can also capture; it cannot run 快门 or 测温.
+Dock **快门 / 拍照 / 录像 / 测温** (with the legend strip in the same bottom chrome). JPEG and H.264 MP4 (no mic) go to the system album (`Pictures/TINY1-B`, `Movies/TINY1-B`) via MediaStore on API 29+; API 26–28 uses `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion 28`) and a media scan. Unplug stops an in-progress recording. Sample preview can also capture; it cannot run 快门 or 测温. Capture feedback (`captureHint`: saved photo, record timer, errors) overlays the live image and must not grow the bottom chrome.
 
 ## Denoise
 
@@ -125,13 +125,17 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 
 ## Measurement
 
-- Auto **max / min** markers on the live image.
+- Auto **max / min** markers on the live image, with dwell / hysteresis so they do not flicker between nearby pixels every frame:
+  - Hold radius **4 px** on the native grid (same thermal blob).
+  - A farther candidate must keep winning for **400 ms** (`MeasurementModel.EXTREMA_DWELL_MS`) before the marker moves.
+  - Immediate move if the new extrema is at least **1.0 °C** more extreme than the locked pixel (`EXTREMA_JUMP_KELVIN16 = 16`).
+  - The color-bar min/max numbers still follow the true frame extrema. Center and custom points are not delayed.
 - Always-on **center** point (toggle in settings).
 - User points: tap add, drag move, long-press or dock delete, max 8. **Only while 测温 is active** — a tap on the image with 测温 off must not add a point.
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.15** (`versionCode` **16**).
+- Current: **1.0.16** (`versionCode` **17**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -152,6 +156,7 @@ Settings → 画面 → **降噪**, default **off**. When on, `Denoise` runs a 5
 - **1.0.13**: unplug returns to waiting-connect (no native destroy SIGSEGV); 测温 must be on to add points; 拍照/录像; shutter max 120s; update download is single-flight; live image sits below the top card.
 - **1.0.14**: live dock only 拍照/录像/测温; 快门/色板/ISR/旋转 in Settings; legend strip **below** the image. Unplug clears the frame and sets 未连接 (DETACHED + device-list poll; do not freeze 已连接). Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` restores the system “open with this app” chooser; connect is still demo JNI.
 - **1.0.15**: Settings **帧生成** (software 2×/3× temporal blend; demo has none; default off). Dock **快门 / 拍照 / 录像 / 测温**; 快门 and 测温 grayed without a live Tiny1-B. Cap/recycle live bitmaps (3), UVC scratch (3), ISR scratch, frame-gen history (2+1), sample UVC (2), update APKs (1). Settings **清除缓存**. USB/JNI path unchanged.
+- **1.0.16**: min/max markers dwell 400 ms (4 px hold, 1.0 °C immediate jump) so they stop flickering; photo/record hints overlay the live image and no longer shift the dock. USB/JNI unchanged.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk
