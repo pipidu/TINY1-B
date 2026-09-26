@@ -56,6 +56,7 @@ class ThermalViewModel(
     fun cycleRotation() = engine.cycleRotation()
     fun setFahrenheit(value: Boolean) = engine.setFahrenheit(value)
     fun setSamplePreview(value: Boolean) = engine.setSamplePreview(value)
+    fun setUseDownloadMirror(value: Boolean) = engine.setUseDownloadMirror(value)
     fun setDenoiseAmount(percent: Int) = engine.setDenoiseAmount(percent)
     fun setMarkerOpacity(percent: Int) = engine.setMarkerOpacity(percent)
     fun setSharpenAmount(percent: Int) = engine.setSharpenAmount(percent)

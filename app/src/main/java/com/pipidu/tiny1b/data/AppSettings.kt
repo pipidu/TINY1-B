@@ -80,6 +80,10 @@ class AppSettings(context: Context) {
         get() = prefs.getFloat(KEY_SPAN_HIGH, 40f).coerceIn(SPAN_MIN_C, SPAN_MAX_C)
         set(value) { prefs.edit().putFloat(KEY_SPAN_HIGH, value.coerceIn(SPAN_MIN_C, SPAN_MAX_C)).apply() }
 
+    var useDownloadMirror: Boolean
+        get() = prefs.getBoolean(KEY_UPDATE_MIRROR, true)
+        set(value) { prefs.edit().putBoolean(KEY_UPDATE_MIRROR, value).apply() }
+
     companion object {
         private const val KEY_PALETTE = "palette"
         private const val KEY_ISR = "isr"
@@ -98,6 +102,7 @@ class AppSettings(context: Context) {
         private const val KEY_SPAN_FIXED = "span_fixed"
         private const val KEY_SPAN_LOW = "span_low_c"
         private const val KEY_SPAN_HIGH = "span_high_c"
+        private const val KEY_UPDATE_MIRROR = "update_mirror"
         const val SPAN_MIN_C = -20f
         const val SPAN_MAX_C = 200f
         const val SPAN_MIN_GAP_C = 1f

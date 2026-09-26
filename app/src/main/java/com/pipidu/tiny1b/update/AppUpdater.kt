@@ -10,10 +10,12 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import com.pipidu.tiny1b.BuildConfig
 import com.pipidu.tiny1b.core.AppVersion
+import com.pipidu.tiny1b.core.GithubDownloadMirror
 import com.pipidu.tiny1b.core.GithubRelease
 import com.pipidu.tiny1b.core.GithubReleaseParser
 import com.pipidu.tiny1b.core.OneShotGate
 import com.pipidu.tiny1b.data.AppCache
+import com.pipidu.tiny1b.data.AppSettings
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -34,7 +36,7 @@ sealed class UpdateStatus {
     data class Error(val message: String) : UpdateStatus()
 }
 
-class AppUpdater(context: Context) {
+class AppUpdater(context: Context, private val settings: AppSettings) {
     private val appContext = context.applicationContext
     private val _status = MutableStateFlow<UpdateStatus>(UpdateStatus.Idle)
     val status: StateFlow<UpdateStatus> = _status.asStateFlow()
@@ -93,7 +95,7 @@ class AppUpdater(context: Context) {
                     ) {
                         return@withContext dest
                     }
-                    httpDownload(release.apkUrl, dest) { read, total ->
+                    httpDownload(release.apkUrl, dest, mirror = settings.useDownloadMirror) { read, total ->
                         val p = if (total > 0) (read.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
                         _status.value = UpdateStatus.Downloading(release, p)
                     }
@@ -210,6 +212,7 @@ class AppUpdater(context: Context) {
             accept = "application/vnd.github+json",
             githubApiHeaders = true,
             readTimeoutMs = 20_000,
+            mirror = false,
         )
         try {
             return connection.inputStream.bufferedReader().use { it.readText() }
@@ -218,14 +221,20 @@ class AppUpdater(context: Context) {
         }
     }
 
-    private fun httpDownload(url: String, dest: File, onProgress: (Long, Long) -> Unit) {
+    private fun httpDownload(
+        url: String,
+        dest: File,
+        mirror: Boolean,
+        onProgress: (Long, Long) -> Unit,
+    ) {
         val tmp = File(dest.parentFile, dest.name + ".part")
         tmp.delete()
         val connection = openFollowing(
-            url = url,
+            url = GithubDownloadMirror.rewrite(url, mirror),
             accept = "*/*",
             githubApiHeaders = false,
             readTimeoutMs = 120_000,
+            mirror = mirror,
         )
         try {
             val total = connection.contentLengthLong
@@ -261,6 +270,7 @@ class AppUpdater(context: Context) {
         accept: String,
         githubApiHeaders: Boolean,
         readTimeoutMs: Int,
+        mirror: Boolean,
         maxRedirects: Int = 6,
     ): HttpURLConnection {
         var current = url
@@ -288,7 +298,7 @@ class AppUpdater(context: Context) {
                 if (location.isNullOrBlank()) {
                     throw IllegalStateException("下载重定向缺少 Location（$code）")
                 }
-                current = resolveRedirect(current, location)
+                current = GithubDownloadMirror.rewrite(resolveRedirect(current, location), mirror)
                 currentAccept = "*/*"
                 sendApiVersion = false
                 return@repeat
@@ -300,7 +310,11 @@ class AppUpdater(context: Context) {
                 connection.disconnect()
                 throw IllegalStateException(
                     when (code) {
-                        403 -> "GitHub 拒绝请求（403）。请检查网络后重试。"
+                        403 -> if (mirror) {
+                            "镜像拒绝请求（403）。请稍后重试，或关闭「使用镜像下载」。"
+                        } else {
+                            "GitHub 拒绝请求（403）。请检查网络后重试。"
+                        }
                         404 -> "未找到发布页（404）。"
                         else -> "GitHub 返回 $code${if (detail.isBlank()) "" else "：$detail"}"
                     },

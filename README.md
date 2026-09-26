@@ -18,7 +18,7 @@ USB 取流沿用厂商 demo 中实际能打开 Tiny1-B 的路径（`libUVCCamera
 - 快门校正、色板、ISR、帧生成、降噪、锐化、画面旋转在设置里；设置可清除软件缓存
 - KB 标定、USB 权限与空状态
 - 亮色界面（浅底、深字、蓝色强调）；热成像色板仅作用在画面上
-- 应用内检查 GitHub Releases 更新
+- 应用内检查 GitHub Releases 更新（下载默认可走 GH Proxy 镜像）
 
 本仓库**不包含**厂商 zip、demo 工程、demo APK、`libir_sample`。厂商 zip 仅可私下对照。
 

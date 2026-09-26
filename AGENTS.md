@@ -16,7 +16,7 @@ The product **is** the Infiray Android demo USB/JNI camera path, with this repo�
 
 ## Current status
 
-On `main`: **1.0.19** (`versionCode` **20**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off) is **vsync-paced** across the native interval (not a burst when the next UVC plane arrives). **降噪** 0–100 (default off) is a cheap separable 3-tap median on the native display planes. **锐化** (0–100, default off) on the display fuse only. **固定上下限** locks the palette to a user °C range. Marker opacity for 中心/最高/最低. Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). Photo / record hints overlay the live image (no dock layout shift). Min/max markers follow the current frame extrema (1.0.16 dwell reverted). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
+On `main`: **1.0.20** (`versionCode` **21**). Compose Chinese light UI. USB via demo **libUVCCamera** + `UsbControlBlock.requestPermission` (`PendingIntent` **flags=0**, action `com.zz.infisense.camera.USB_PERMISSION.`). **targetSdk 26**. Activity `USB_DEVICE_ATTACHED` + `device_filter.xml` (VID `0x0BDA` / PID `0x3901`) so the system offers this app on insert; streaming still uses the demo JNI open path. Unplug: waiting-connect UI first, then `abandon()`. Frames: demo split of 256×384 YUYV into **192×256** image + **192×256** Kelvin-16. Display rotation 0/90/180/270 persisted. Fast bilinear ISR. Software **帧生成** (OFF / 2× / 3×, default off) is **vsync-paced** across the native interval (not a burst when the next UVC plane arrives). **降噪** 0–100 (default off) is a cheap separable 3-tap median on the native display planes. **锐化** (0–100, default off) on the display fuse only. **固定上下限** locks the palette to a user °C range. Marker opacity for 中心/最高/最低. Temperature legend is a strip **below** the live image (not over pixels). Live dock is **快门 / 拍照 / 录像 / 测温**. 快门 and 测温 require a live Tiny1-B (grayed on sample / disconnected). Photo / record hints overlay the live image (no dock layout shift). Min/max markers follow the current frame extrema (1.0.16 dwell reverted). In-app GitHub updater for `pipidu/TINY1-B` (download is single-flight; `cacheDir/updates` keeps **one** APK; Settings **使用镜像下载** default ON via GH Proxy `https://gh.4o.pw/`). Live bitmaps / UVC / ISR / frame-gen history are capped and recycled.
 
 ## Current architecture
 
@@ -30,8 +30,8 @@ keystore/ Project signing key (required so later APKs overwrite the same install
 
 - `ThermalEngine` constructs `UVCCamera(0x0BDA, 0x3901, 256, 384, activity, handler)`, `create()`, then `open()` with the demo 5s retry. `onFrame` → triple UVC scratch → `FrameParser.parseUvcFrame`. Unplug: set Searching + `bitmap=null` first, then `UVCCamera.abandon()` (no native stop/release/destroy). Do not leave a frozen last frame with status 已连接.
 - `LiveViewScreen` is a Column: top chrome (title / fps / status / 设置), thermal stage, **below-image** legend strip + dock **快门 / 拍照 / 录像 / 测温**. 色板 / ISR / 帧生成 / 旋转 live in Settings. 快门 and 测温 are disabled unless `DeviceStatus.Live`. Empty/permission/error cards when not live.
-- `SettingsScreen` covers 色板, **固定上下限**, ISR, **帧生成**, 画面旋转, **降噪 0–100**, **锐化**, min/max, center, **标注透明度**, **手动快门**, shutter max **120s**, KB cal, sample preview, **清除缓存**, **检查更新**.
-- `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated). `OneShotGate` + immediate `Downloading` so double-tap cannot start two downloads. Prunes `cacheDir/updates` to the APK being downloaded.
+- `SettingsScreen` covers 色板, **固定上下限**, ISR, **帧生成**, 画面旋转, **降噪 0–100**, **锐化**, min/max, center, **标注透明度**, **手动快门**, shutter max **120s**, KB cal, sample preview, **清除缓存**, **检查更新**, **使用镜像下载**.
+- `AppUpdater` queries `https://api.github.com/repos/pipidu/TINY1-B/releases/latest` (user-initiated, **direct**, not mirrored). APK download uses GH Proxy when **使用镜像下载** is on (default). `OneShotGate` + immediate `Downloading` so double-tap cannot start two downloads. Prunes `cacheDir/updates` to the APK being downloaded.
 
 ## UI theme
 
@@ -165,7 +165,7 @@ Settings → 画面 → **固定上下限**. Off (default): percentile AGC each 
 
 ## Versioning + GitHub Releases
 
-- Current: **1.0.19** (`versionCode` **20**).
+- Current: **1.0.20** (`versionCode` **21**).
 - `versionName` started at **1.0.0**, `versionCode` at **1** (`app/build.gradle.kts`).
 - After each **subsequent** meaningful change: bump patch (`1.0.x` +1) and `versionCode` +1, update this file, commit, **push `origin/main`**, then publish a GitHub Release **with the signed APK**.
 - Do **not** open pull requests.
@@ -190,6 +190,7 @@ Settings → 画面 → **固定上下限**. Off (default): percentile AGC each 
 - **1.0.17**: revert min/max dwell (markers follow the live extrema again). Settings: 标注透明度 (中心/最高/最低), 锐化 0–100 display-only, 固定上下限 palette span. USB/JNI unchanged.
 - **1.0.18**: 帧生成 is vsync-paced (HandlerThread + Choreographer) across the native period. 2× of 25 fps → ~50; 3× of 25 fps → ~75 capped at refresh. 40 ms native is not skipped. USB/JNI unchanged.
 - **1.0.19**: cheaper live 降噪 (separable 3-tap median on native 192×256, reused scratch) plus persisted strength 0–100 (0 = off). Measurement still unfiltered Kelvin. USB/JNI unchanged.
+- **1.0.20**: in-app APK download can use GH Proxy (`https://gh.4o.pw/` + full HTTPS GitHub URL). Settings **使用镜像下载** default ON; version check still hits `api.github.com` directly. USB/JNI unchanged.
 
 ```bash
 export ANDROID_HOME=$HOME/Android/Sdk
@@ -215,7 +216,16 @@ If a future change were forced to keep demo `applicationId` `com.dashazi.p2demo`
 
 ## In-app update
 
-Settings → 更新 → **检查更新**. Compares `BuildConfig.VERSION_NAME` to the latest GitHub Release **tag** (`AppVersion`, so 1.0.3 is newer than 1.0.2). Parser must tolerate logins like `cursor[bot]` (brackets inside JSON strings). HTTP uses User-Agent `TINY1-B/<version> (+https://github.com/pipidu/TINY1-B)`, follows GitHub → `release-assets.githubusercontent.com` redirects **without** the API `Accept` header, and stores the APK under `cacheDir/updates/` (**one** APK; older files pruned). Install uses `FileProvider` + `ClipData` + `REQUEST_INSTALL_PACKAGES` (unknown-sources screen on API 26+). Failures show a Chinese error; no force-update.
+Settings → 更新 → **检查更新**. Compares `BuildConfig.VERSION_NAME` to the latest GitHub Release **tag** (`AppVersion`, so 1.0.3 is newer than 1.0.2). Parser must tolerate logins like `cursor[bot]` (brackets inside JSON strings). HTTP uses User-Agent `TINY1-B/<version> (+https://github.com/pipidu/TINY1-B)`. Version check is **direct** `https://api.github.com/repos/pipidu/TINY1-B/releases/latest`.
+
+APK download (and GitHub → `release-assets.githubusercontent.com` hops) uses GH Proxy when Settings **使用镜像下载** is on (**default ON**, persisted `update_mirror`). Rewrite is the docs “完整地址” form only — prefix + full HTTPS URL, no invented scheme:
+
+```
+https://gh.4o.pw/ + https://github.com/owner/repo/releases/download/tag/file
+→ https://gh.4o.pw/https://github.com/owner/repo/releases/download/tag/file
+```
+
+Allowed upstream hosts (docs): `github.com`, `*.github.com`, `githubusercontent.com`, `*.githubusercontent.com`. Already-prefixed URLs are not double-wrapped. Off = same direct GitHub download as before. Failures stay Chinese. Stores the APK under `cacheDir/updates/` (**one** APK; older files pruned). Install uses `FileProvider` + `ClipData` + `REQUEST_INSTALL_PACKAGES` (unknown-sources screen on API 26+). No force-update.
 
 ## Layout
 

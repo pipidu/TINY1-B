@@ -75,6 +75,7 @@ data class EngineState(
     val mirror: Boolean = false,
     val useFahrenheit: Boolean = false,
     val samplePreview: Boolean = false,
+    val useDownloadMirror: Boolean = true,
     val denoiseAmount: Int = 0,
     val rotation: DisplayRotation = DisplayRotation.DEG_0,
     val frameGen: FrameGenScale = FrameGenScale.OFF,
@@ -368,6 +369,11 @@ class ThermalEngine(
         _state.update { it.copy(samplePreview = value) }
         if (value && _state.value.status != DeviceStatus.Live) startSample()
         if (!value) stopSample()
+    }
+
+    fun setUseDownloadMirror(value: Boolean) {
+        settings.useDownloadMirror = value
+        _state.update { it.copy(useDownloadMirror = value) }
     }
 
     fun setDenoiseAmount(percent: Int) {
@@ -1177,6 +1183,7 @@ class ThermalEngine(
         mirror = settings.mirror,
         useFahrenheit = settings.useFahrenheit,
         samplePreview = settings.samplePreview,
+        useDownloadMirror = settings.useDownloadMirror,
         denoiseAmount = settings.denoiseAmount,
         rotation = settings.rotation,
         frameGen = settings.frameGenScale,

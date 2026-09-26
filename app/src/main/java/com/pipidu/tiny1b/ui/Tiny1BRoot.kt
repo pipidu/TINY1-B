@@ -35,6 +35,7 @@ fun Tiny1BRoot(viewModel: ThermalViewModel) {
                 onRotation = viewModel::setRotation,
                 onFahrenheit = viewModel::setFahrenheit,
                 onSample = viewModel::setSamplePreview,
+                onUseDownloadMirror = viewModel::setUseDownloadMirror,
                 onDenoiseAmount = viewModel::setDenoiseAmount,
                 onMarkerOpacity = viewModel::setMarkerOpacity,
                 onSharpen = viewModel::setSharpenAmount,

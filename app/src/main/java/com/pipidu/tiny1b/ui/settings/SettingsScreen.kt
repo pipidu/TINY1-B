@@ -41,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,6 +52,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.graphics.Brush
 import com.pipidu.tiny1b.core.DisplayRotation
 import com.pipidu.tiny1b.core.FrameGenScale
+import com.pipidu.tiny1b.core.GithubDownloadMirror
 import com.pipidu.tiny1b.core.IsrScale
 import com.pipidu.tiny1b.core.PaletteId
 import com.pipidu.tiny1b.core.Palettes
@@ -86,6 +88,7 @@ fun SettingsScreen(
     onRotation: (DisplayRotation) -> Unit,
     onFahrenheit: (Boolean) -> Unit,
     onSample: (Boolean) -> Unit,
+    onUseDownloadMirror: (Boolean) -> Unit,
     onDenoiseAmount: (Int) -> Unit,
     onMarkerOpacity: (Int) -> Unit,
     onSharpen: (Int) -> Unit,
@@ -103,6 +106,7 @@ fun SettingsScreen(
     onClearCache: () -> String,
 ) {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     var cacheBytes by remember { mutableStateOf(AppCache.sizeBytes(context)) }
     var cacheMessage by remember { mutableStateOf<String?>(null) }
     Column(
@@ -348,6 +352,20 @@ fun SettingsScreen(
             Section("更新") {
                 Text("当前版本  $currentVersion  ($currentVersionCode)", color = Ink, fontSize = 14.sp)
                 Text("从 GitHub Releases（pipidu/TINY1-B）检查新版本，由你手动下载安装，不会强制更新。", color = Muted, fontSize = 12.sp)
+                ToggleRow(
+                    "使用镜像下载",
+                    "默认开启。下载 APK 时把完整 GitHub 地址接到 GH Proxy 前缀后面；关闭则直连 GitHub。",
+                    state.useDownloadMirror,
+                    onUseDownloadMirror,
+                )
+                Text(
+                    "把 GitHub 文件地址接到本站前缀后面即可下载。",
+                    color = Muted,
+                    fontSize = 12.sp,
+                )
+                TextButton(onClick = { uriHandler.openUri(GithubDownloadMirror.DOCS_URL) }) {
+                    Text("查看镜像说明  gh.4o.pw/docs", color = Accent)
+                }
                 Spacer(Modifier.height(8.dp))
                 when (val status = updateStatus) {
                     UpdateStatus.Idle -> {
